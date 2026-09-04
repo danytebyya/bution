@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия релиза, например v0.1.0"
+        required: true
+        default: "v0.1.0"
 
 permissions:
   contents: write
@@ -20,7 +25,7 @@ jobs:
             target: aarch64-apple-darwin
             asset: bution-macos-arm64
             archive: tar
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: bution-macos-x64
             archive: tar
@@ -51,7 +56,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -63,5 +68,21 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag
-
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${MANUAL_VERSION}"
+            [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Version must look like v0.1.0" >&2
+              exit 1
+            }
+            gh release create "${release_tag}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --generate-notes
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --generate-notes \
+              --verify-tag
+          fi

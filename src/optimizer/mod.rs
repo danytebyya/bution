@@ -1,7 +1,11 @@
 //! Memory-safe tensor distribution across local and RPC devices.
 
+use crate::benchmark::{LlamaBenchmark, run_llama_benchmark};
+use crate::llama::{BenchConfig, LlamaBinaries};
+use crate::processes::ProcessManager;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +32,24 @@ pub struct Allocation {
 pub struct DistributionPlan {
     pub model_memory_bytes: u64,
     pub allocations: Vec<Allocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OptimizationTrial {
+    pub tensor_split: Vec<f32>,
+    pub benchmark: LlamaBenchmark,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OptimizationResult {
+    pub trials: Vec<OptimizationTrial>,
+    pub best_index: usize,
+}
+
+impl OptimizationResult {
+    pub fn best(&self) -> &OptimizationTrial {
+        &self.trials[self.best_index]
+    }
 }
 
 impl DistributionPlan {
@@ -98,6 +120,71 @@ pub fn plan_distribution(
         model_memory_bytes,
         allocations,
     })
+}
+
+/// MVP search space for two nodes. Invalid splits that exceed a node's memory
+/// budget are removed before expensive llama-bench runs.
+pub fn two_node_candidates(model_memory_bytes: u64, nodes: &[NodeCapacity]) -> Vec<Vec<f32>> {
+    if nodes.len() != 2 || model_memory_bytes == 0 {
+        return Vec::new();
+    }
+    [[0.8_f32, 0.2_f32], [0.7, 0.3], [0.6, 0.4], [0.5, 0.5]]
+        .into_iter()
+        .filter(|split| {
+            split.iter().zip(nodes).all(|(fraction, node)| {
+                model_memory_bytes as f64 * *fraction as f64 <= node.available_memory_bytes as f64
+            })
+        })
+        .map(Vec::from)
+        .collect()
+}
+
+pub async fn optimize_cluster(
+    manager: &mut ProcessManager,
+    binaries: &LlamaBinaries,
+    base_config: &BenchConfig,
+    candidates: &[Vec<f32>],
+    timeout_per_trial: Duration,
+) -> Result<OptimizationResult> {
+    let mut trials = Vec::new();
+    for split in candidates {
+        let mut config = base_config.clone();
+        config.tensor_split = split.clone();
+        if let Ok(benchmark) =
+            run_llama_benchmark(manager, binaries, &config, timeout_per_trial).await
+        {
+            trials.push(OptimizationTrial {
+                tensor_split: split.clone(),
+                benchmark,
+            });
+        }
+    }
+    select_best_trials(trials)
+}
+
+pub fn select_best_trials(trials: Vec<OptimizationTrial>) -> Result<OptimizationResult> {
+    if trials.is_empty() {
+        bail!("none of the cluster distributions completed successfully");
+    }
+    let best_index = trials
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            left.benchmark
+                .generation_tokens_per_second
+                .partial_cmp(&right.benchmark.generation_tokens_per_second)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    right
+                        .benchmark
+                        .estimated_ttft_ms
+                        .partial_cmp(&left.benchmark.estimated_ttft_ms)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .map(|(index, _)| index)
+        .expect("non-empty trials");
+    Ok(OptimizationResult { trials, best_index })
 }
 
 fn capped_weighted_distribution(priorities: &[f64], capacities: &[f64]) -> Result<Vec<f64>> {
@@ -190,5 +277,35 @@ mod tests {
     fn rejects_model_larger_than_cluster() {
         let nodes = [node("Only", 8 * GIB, 1.0, 100.0, true)];
         assert!(plan_distribution(9 * GIB, &nodes).is_err());
+    }
+
+    #[test]
+    fn filters_splits_that_exceed_memory() {
+        let nodes = [
+            node("Mac", 14 * GIB, 1.0, 100.0, true),
+            node("PC", 14 * GIB, 1.0, 100.0, false),
+        ];
+        let candidates = two_node_candidates(24 * GIB, &nodes);
+        assert_eq!(candidates, vec![vec![0.5, 0.5]]);
+    }
+
+    #[test]
+    fn selects_highest_generation_throughput() {
+        let trials = [6.7, 8.2, 7.9]
+            .into_iter()
+            .enumerate()
+            .map(|(index, speed)| OptimizationTrial {
+                tensor_split: vec![0.8 - index as f32 * 0.1, 0.2 + index as f32 * 0.1],
+                benchmark: LlamaBenchmark {
+                    prompt_tokens_per_second: 100.0,
+                    generation_tokens_per_second: speed,
+                    estimated_ttft_ms: 1_000.0,
+                    compute_score: speed,
+                },
+            })
+            .collect();
+        let result = select_best_trials(trials).unwrap();
+        assert_eq!(result.best().benchmark.generation_tokens_per_second, 8.2);
+        assert_eq!(result.best().tensor_split, vec![0.7, 0.3]);
     }
 }

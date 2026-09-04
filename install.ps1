@@ -34,7 +34,7 @@ function Write-Success([string]$Message) {
 }
 
 function Write-Info([string]$Message) {
-    Write-Host "       ℹ " -ForegroundColor DarkCyan -NoNewline
+    Write-Host "       ℹ " -ForegroundColor Blue -NoNewline
     Write-Host $Message -ForegroundColor DarkGray
 }
 
@@ -76,12 +76,12 @@ function Download-FileWithProgress([string]$Url, [string]$Destination) {
                     $currMb = ($downloadedBytes / 1MB).ToString("0.0")
                     $totalMb = ($totalBytes / 1MB).ToString("0.0")
                     $line = "`r       [$bar] $percent% ($currMb / $totalMb MB)  "
-                    Write-Host -NoNewline $line -ForegroundColor DarkCyan
+                    Write-Host -NoNewline $line -ForegroundColor Blue
                 }
                 else {
                     $currMb = ($downloadedBytes / 1MB).ToString("0.0")
                     $line = "`r       Загружено: $currMb MB  "
-                    Write-Host -NoNewline $line -ForegroundColor DarkCyan
+                    Write-Host -NoNewline $line -ForegroundColor Blue
                 }
             }
         }
@@ -383,7 +383,7 @@ if (-not $udp) {
     Write-Host " ✨ Установка успешно завершена!" -ForegroundColor Green
     Write-Host ""
     Write-Host " Запустить прямо сейчас:" -ForegroundColor White
-    Write-Host "   $Launcher" -ForegroundColor Cyan
+    Write-Host "   $Launcher" -ForegroundColor Blue
     Write-Host ""
     Write-Host " В новом окне PowerShell можно использовать просто:" -ForegroundColor White
     Write-Host "   bution" -ForegroundColor Yellow

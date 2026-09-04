@@ -33,7 +33,7 @@ success() {
 }
 
 info() {
-  printf '       \033[36mℹ\033[0m \033[90m%s\033[0m\n' "$1"
+  printf '       \033[38;2;59;130;246mℹ\033[0m \033[90m%s\033[0m\n' "$1"
 }
 
 fail() {
@@ -50,7 +50,7 @@ spin() {
     local i=0
     while kill -0 "$pid" 2>/dev/null; do
       i=$(( (i + 1) % 10 ))
-      printf "\r       \033[36m%s\033[0m \033[90m%s\033[0m" "${spinstr:$i:1}" "$msg"
+      printf "\r       \033[38;2;59;130;246m%s\033[0m \033[90m%s\033[0m" "${spinstr:$i:1}" "$msg"
       sleep $delay
     done
     printf "\r\033[K"
@@ -191,6 +191,6 @@ success "Команда bution добавлена в PATH"
 printf '\n\033[90m─────────────────────────────────────────────────────────────\033[0m\n'
 printf ' \033[1;32m✨ Установка успешно завершена!\033[0m\n\n'
 printf ' \033[1;37mЗапустить прямо сейчас:\033[0m\n'
-printf '   \033[1;36m%s/bution\033[0m\n\n' "${bin_dir}"
+printf '   \033[38;2;59;130;246m%s/bution\033[0m\n\n' "${bin_dir}"
 printf ' \033[1;37mИли откройте новое окно Terminal и выполните:\033[0m\n'
 printf '   \033[1;33mbution\033[0m\n\n'

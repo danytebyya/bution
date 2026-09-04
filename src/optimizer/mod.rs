@@ -1,5 +1,9 @@
 //! Memory-safe tensor distribution across local and RPC devices.
 
+mod cache;
+
+pub use cache::{OptimizationCache, OptimizationFingerprint};
+
 use crate::benchmark::{LlamaBenchmark, run_llama_benchmark};
 use crate::llama::{BenchConfig, LlamaBinaries};
 use crate::processes::ProcessManager;

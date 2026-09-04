@@ -280,12 +280,20 @@ async fn handle_connection(
         bail!("peer identity or protocol version did not match");
     }
 
-    let trusted = {
+    let (trusted, key_mismatch) = {
         let settings = context.settings.lock().await;
-        settings
-            .trusted_peer(request.node_id)
-            .is_some_and(|peer| peer.public_key == request.public_key)
+        match settings.trusted_peer(request.node_id) {
+            Some(peer) => (
+                peer.public_key == request.public_key,
+                peer.public_key != request.public_key,
+            ),
+            None => (false, false),
+        }
     };
+    if key_mismatch {
+        reject_pairing(&mut channel, &context, request.node_id).await?;
+        bail!("a trusted node presented a different public key");
+    }
     let decision = if trusted {
         PairDecision::Accept
     } else {

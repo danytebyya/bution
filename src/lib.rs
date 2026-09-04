@@ -3,6 +3,7 @@
 pub mod cluster;
 pub mod discovery;
 pub mod hardware;
+pub mod llama;
 pub mod network;
 pub mod processes;
 pub mod security;

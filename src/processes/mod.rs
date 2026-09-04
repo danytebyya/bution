@@ -42,6 +42,13 @@ pub struct ProcessSpec {
     pub environment: Vec<(String, String)>,
 }
 
+#[derive(Debug)]
+pub struct CompletedProcess {
+    pub status: ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 impl ProcessSpec {
     pub fn new(kind: ProcessKind, executable: impl Into<PathBuf>) -> Self {
         Self {
@@ -164,6 +171,39 @@ impl ProcessManager {
         Ok(status)
     }
 
+    pub async fn run_to_completion(
+        &mut self,
+        spec: ProcessSpec,
+        timeout: Duration,
+    ) -> Result<CompletedProcess> {
+        let kind = spec.kind;
+        let mut logs = self.subscribe();
+        self.start(spec).await?;
+        let status = match self.wait_for_exit(kind, timeout).await {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.stop(kind).await;
+                return Err(error);
+            }
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        while let Ok(log) = logs.try_recv() {
+            if log.process != kind {
+                continue;
+            }
+            match log.stream {
+                OutputStream::Stdout => stdout.push(log.line),
+                OutputStream::Stderr => stderr.push(log.line),
+            }
+        }
+        Ok(CompletedProcess {
+            status,
+            stdout: stdout.join("\n"),
+            stderr: stderr.join("\n"),
+        })
+    }
+
     pub async fn stop(&mut self, kind: ProcessKind) -> Result<()> {
         let Some(mut process) = self.processes.remove(&kind) else {
             return Ok(());
@@ -241,5 +281,20 @@ mod tests {
         let log = logs.try_recv().unwrap();
         assert!(log.line.starts_with("rustc "));
         assert!(!manager.is_running(ProcessKind::LlamaBench));
+    }
+
+    #[tokio::test]
+    async fn returns_completed_process_output() {
+        let mut manager = ProcessManager::default();
+        let output = manager
+            .run_to_completion(
+                ProcessSpec::new(ProcessKind::LlamaBench, "rustc").args(["--version"]),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout.starts_with("rustc "));
+        assert!(output.stderr.is_empty());
     }
 }

@@ -24,7 +24,7 @@ bution
 bution --model "/полный/путь/model.gguf"
 ```
 
-### Windows / HONOR
+### Windows
 
 Откройте обычный PowerShell и выполните:
 
@@ -57,7 +57,7 @@ bution --model "D:\Models\model.gguf"
 поставит Rust и Microsoft C++ Build Tools через `winget`, а затем соберёт BUTION.
 Первая такая установка может занять 10–30 минут и показать стандартный запрос UAC.
 
-## Подключение Mac и HONOR
+## Подключение macOS и Windows
 
 1. Подключите оба компьютера к одной Wi-Fi сети или hotspot телефона.
 2. На HONOR запустите:

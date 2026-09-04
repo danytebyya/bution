@@ -21,9 +21,64 @@ try {
     Write-Step "загружаю BUTION…"
     $ButionArchive = Join-Path $TemporaryDir "bution.zip"
     $ButionUrl = "https://github.com/$Repo/releases/latest/download/bution-windows-x64.zip"
-    Invoke-WebRequest -UseBasicParsing -Uri $ButionUrl -OutFile $ButionArchive
-    Expand-Archive -Force -Path $ButionArchive -DestinationPath $TemporaryDir
-    Copy-Item -Force (Join-Path $TemporaryDir "bution.exe") (Join-Path $BinDir "bution-real.exe")
+    $ButionReady = $false
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $ButionUrl -OutFile $ButionArchive
+        Expand-Archive -Force -Path $ButionArchive -DestinationPath $TemporaryDir
+        Copy-Item -Force (Join-Path $TemporaryDir "bution.exe") (Join-Path $BinDir "bution-real.exe")
+        $ButionReady = $true
+    }
+    catch {
+        Write-Step "готовый релиз пока недоступен — выполняю автоматическую сборку…"
+    }
+
+    if (-not $ButionReady) {
+        if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            throw "Для автоматической установки нужен winget (Microsoft App Installer)."
+        }
+
+        Write-Step "устанавливаю Microsoft C++ Build Tools (может занять 10–30 минут)…"
+        & winget.exe install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent `
+            --accept-source-agreements --accept-package-agreements --disable-interactivity `
+            --override "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Не удалось автоматически установить Microsoft C++ Build Tools."
+        }
+
+        $Cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+        if (-not (Test-Path $Cargo)) {
+            Write-Step "устанавливаю Rust…"
+            $Rustup = Join-Path $TemporaryDir "rustup-init.exe"
+            Invoke-WebRequest -UseBasicParsing `
+                -Uri "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe" `
+                -OutFile $Rustup
+            & $Rustup -y --profile minimal --default-toolchain stable
+            if ($LASTEXITCODE -ne 0) {
+                throw "Не удалось автоматически установить Rust."
+            }
+        }
+        $env:Path = "$(Split-Path $Cargo);$env:Path"
+
+        Write-Step "скачиваю исходники и собираю BUTION…"
+        $SourceArchive = Join-Path $TemporaryDir "source.zip"
+        $SourceExtract = Join-Path $TemporaryDir "source"
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/$Repo/archive/refs/heads/main.zip" `
+            -OutFile $SourceArchive
+        Expand-Archive -Force -Path $SourceArchive -DestinationPath $SourceExtract
+        $Manifest = Get-ChildItem -Path $SourceExtract -Recurse -File -Filter "Cargo.toml" |
+            Sort-Object { $_.FullName.Length } |
+            Select-Object -First 1
+        if (-not $Manifest) {
+            throw "В архиве BUTION отсутствует Cargo.toml."
+        }
+        & $Cargo build --release --locked --manifest-path $Manifest.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "Автоматическая сборка BUTION завершилась ошибкой."
+        }
+        $BuiltBinary = Join-Path $Manifest.Directory.FullName "target\release\bution.exe"
+        Copy-Item -Force $BuiltBinary (Join-Path $BinDir "bution-real.exe")
+    }
 
     Write-Step "загружаю официальный llama.cpp с RPC…"
     $Release = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
@@ -91,4 +146,3 @@ if (-not $udp) {
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TemporaryDir
 }
-

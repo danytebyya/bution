@@ -1,6 +1,7 @@
 //! Core library for the BUTION distributed local AI cluster.
 
 pub mod benchmark;
+pub mod chat;
 pub mod cluster;
 pub mod control;
 pub mod discovery;

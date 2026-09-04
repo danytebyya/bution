@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
 
 const LOGO: &str = r#"██████╗ ██╗   ██╗████████╗██╗ ██████╗ ███╗   ██╗
 ██╔══██╗██║   ██║╚══██╔══╝██║██╔═══██╗████╗  ██║
@@ -41,6 +41,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_content(frame, columns[1], app);
     draw_telemetry(frame, columns[2], app);
     draw_help(frame, rows[2]);
+    if app.pending_pairing.is_some() {
+        draw_pairing(frame, area, app);
+    }
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, show_logo: bool) {
@@ -105,9 +108,13 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .as_ref()
         .map(|model| model.name.as_str())
         .unwrap_or("No model selected");
-    let text = vec![
+    let mut text = vec![
         Line::styled(
-            "CLUSTER READY",
+            if app.cluster_running {
+                "MODEL RUNNING"
+            } else {
+                "CLUSTER READY"
+            },
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -138,10 +145,24 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         Line::raw(""),
         Line::styled(
-            "Waiting for trusted nodes on the local network…",
+            if app.cluster_running {
+                "Enter stops the model and all workers"
+            } else {
+                "Enter starts the selected model • Waiting for trusted nodes…"
+            },
             Style::default().fg(CYAN),
         ),
     ];
+    if !app.distribution.is_empty() {
+        text.push(Line::raw(""));
+        text.push(Line::styled(
+            "DISTRIBUTION",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ));
+        for (name, fraction) in &app.distribution {
+            text.push(Line::raw(format!("{name:<18} {:>3.0}%", fraction * 100.0)));
+        }
+    }
     frame.render_widget(
         Paragraph::new(text)
             .block(panel("CLUSTER"))
@@ -370,4 +391,78 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
             ),
         area,
     );
+}
+
+fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(pairing) = &app.pending_pairing else {
+        return;
+    };
+    let popup = centered_rect(52, 13, area);
+    frame.render_widget(Clear, popup);
+    let accept = if pairing.accept_selected {
+        "[ Accept ]"
+    } else {
+        "  Accept  "
+    };
+    let reject = if pairing.accept_selected {
+        "  Reject  "
+    } else {
+        "[ Reject ]"
+    };
+    let text = vec![
+        Line::styled(
+            "New node detected",
+            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::raw(&pairing.name),
+        Line::styled(pairing.address.to_string(), Style::default().fg(MUTED)),
+        Line::raw(""),
+        Line::styled("Pairing code", Style::default().fg(MUTED)),
+        Line::styled(
+            &pairing.code,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                accept,
+                if pairing.accept_selected {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(MUTED)
+                },
+            ),
+            Span::raw("     "),
+            Span::styled(
+                reject,
+                if pairing.accept_selected {
+                    Style::default().fg(MUTED)
+                } else {
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                },
+            ),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .block(panel("PAIRING")),
+        popup,
+    );
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width.saturating_sub(2));
+    let height = height.min(area.height.saturating_sub(2));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }

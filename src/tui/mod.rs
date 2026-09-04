@@ -24,7 +24,14 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run(mut app: App) -> Result<()> {
+pub async fn run(mut app: App) -> Result<()> {
+    let mut runtime = crate::runtime::RuntimeHandle::start(
+        app.settings.clone(),
+        app.paths.clone(),
+        app.hardware.clone(),
+        app.interfaces.clone(),
+    )
+    .await?;
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen, Hide)?;
     let _guard = TerminalGuard;
@@ -33,6 +40,9 @@ pub fn run(mut app: App) -> Result<()> {
     let mut last_telemetry = Instant::now();
 
     while app.running {
+        while let Ok(event) = runtime.events.try_recv() {
+            app.apply_runtime_event(event);
+        }
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
             app.refresh_telemetry();
             last_telemetry = Instant::now();
@@ -41,10 +51,13 @@ pub fn run(mut app: App) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    app.handle_key(key);
+                    if let app::AppAction::Runtime(command) = app.handle_key(key) {
+                        runtime.command(command).await?;
+                    }
                 }
             }
         }
     }
+    runtime.shutdown().await;
     Ok(())
 }

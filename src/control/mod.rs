@@ -43,7 +43,7 @@ struct ServerContext {
     settings: Arc<Mutex<Settings>>,
     paths: AppPaths,
     identity: NoiseIdentity,
-    binaries: LlamaBinaries,
+    binaries: Option<LlamaBinaries>,
     hardware: HardwareProfile,
     processes: Arc<Mutex<ProcessManager>>,
     events: mpsc::Sender<ControlEvent>,
@@ -63,7 +63,7 @@ impl ControlServer {
         settings: Arc<Mutex<Settings>>,
         paths: AppPaths,
         identity: NoiseIdentity,
-        binaries: LlamaBinaries,
+        binaries: Option<LlamaBinaries>,
         hardware: HardwareProfile,
     ) -> Result<Self> {
         let listener = TcpListener::bind(bind_address)
@@ -322,7 +322,16 @@ async fn handle_connection(
                         .await?;
                     continue;
                 }
-                let process = context.binaries.worker_process(&WorkerConfig {
+                let Some(binaries) = &context.binaries else {
+                    channel
+                        .send(&ControlMessage::Error {
+                            message: "llama.cpp binaries are not configured on this worker".into(),
+                            detail: None,
+                        })
+                        .await?;
+                    continue;
+                };
+                let process = binaries.worker_process(&WorkerConfig {
                     bind_address: address,
                     port: rpc_port,
                     threads: context.hardware.logical_cores.saturating_div(2).max(1),

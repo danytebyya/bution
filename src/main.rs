@@ -42,7 +42,8 @@ impl From<RoleArg> for NodeRole {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut app = App::load()?;
     let mut settings_changed = false;
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
     if settings_changed {
         app.settings.save(&app.paths)?;
     }
-    bution::tui::run(app)
+    bution::tui::run(app).await
 }
 
 #[cfg(test)]

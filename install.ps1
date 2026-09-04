@@ -6,7 +6,42 @@ function Write-Step([string]$Message) {
     Write-Host "BUTION $Message" -ForegroundColor Cyan
 }
 
-if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "x86_64")) {
+function ConvertTo-Utf8Text([object]$Content) {
+    if ($null -eq $Content) {
+        return ""
+    }
+    if ($Content.PSObject -and $Content.PSObject.Properties["Content"]) {
+        $Content = $Content.Content
+    }
+    if ($null -eq $Content) {
+        return ""
+    }
+    if ($Content -is [string]) {
+        return $Content.TrimStart([char]0xFEFF).Trim()
+    }
+    if ($Content -is [byte[]]) {
+        $text = [Text.Encoding]::UTF8.GetString([byte[]]$Content)
+        return $text.TrimStart([char]0xFEFF).Trim()
+    }
+    if ($Content -is [Array]) {
+        try {
+            $bytes = [byte[]]$Content
+            $text = [Text.Encoding]::UTF8.GetString($bytes)
+            return $text.TrimStart([char]0xFEFF).Trim()
+        }
+        catch {
+            # fall through
+        }
+    }
+    if ($Content -is [byte]) {
+        $text = [Text.Encoding]::UTF8.GetString([byte[]]@([byte]$Content))
+        return $text.TrimStart([char]0xFEFF).Trim()
+    }
+    return ([string]$Content).TrimStart([char]0xFEFF).Trim()
+}
+
+$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($arch -notin @("AMD64", "x86_64")) {
     throw "Этот установщик пока поддерживает Windows x64."
 }
 
@@ -27,27 +62,32 @@ try {
     else {
         Write-Step "загружаю BUTION…"
         $ButionArchive = Join-Path $TemporaryDir "bution.zip"
+        $ButionExtract = Join-Path $TemporaryDir "bution-extract"
         $ButionUrl = "https://github.com/$Repo/releases/latest/download/bution-windows-x64.zip"
         $ButionReady = $false
         try {
             Invoke-WebRequest -UseBasicParsing -Uri $ButionUrl -OutFile $ButionArchive
-            Expand-Archive -Force -Path $ButionArchive -DestinationPath $TemporaryDir
-            Copy-Item -Force (Join-Path $TemporaryDir "bution.exe") $ButionBinary
-            $ButionReady = $true
+            Expand-Archive -Force -Path $ButionArchive -DestinationPath $ButionExtract
+            $ButionExe = Get-ChildItem -Path $ButionExtract -Recurse -File -Filter "bution.exe" |
+                Select-Object -First 1
+            if ($ButionExe) {
+                Copy-Item -Force $ButionExe.FullName $ButionBinary
+                $ButionReady = $true
+            }
         }
         catch {
             Write-Step "готовый релиз недоступен — выполняю автоматическую сборку…"
         }
 
         if (-not $ButionReady) {
-            $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+            $ProgFilesX86 = if (${env:ProgramFiles(x86)}) { ${env:ProgramFiles(x86)} } else { $env:ProgramFiles }
+            $VsWhere = Join-Path $ProgFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
             $CppToolsReady = $false
             if (Test-Path $VsWhere) {
                 $CppInstall = & $VsWhere -latest -products "*" `
                     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
                     -property installationPath
-                $CppToolsReady = ($LASTEXITCODE -eq 0) -and
-                    (-not [string]::IsNullOrWhiteSpace($CppInstall))
+                $CppToolsReady = ($LASTEXITCODE -eq 0) -and (-not [string]::IsNullOrWhiteSpace($CppInstall))
             }
 
             if ($CppToolsReady) {
@@ -67,8 +107,11 @@ try {
             }
 
             $CargoCommand = Get-Command cargo.exe -ErrorAction SilentlyContinue
-            $Cargo = if ($CargoCommand) {
-                $CargoCommand.Source
+            $Cargo = if ($CargoCommand -and $CargoCommand.Path) {
+                $CargoCommand.Path
+            }
+            elseif ($CargoCommand -and $CargoCommand.Definition) {
+                $CargoCommand.Definition
             }
             else {
                 Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
@@ -87,7 +130,10 @@ try {
                     throw "Не удалось автоматически установить Rust."
                 }
             }
-            $env:Path = "$(Split-Path $Cargo);$env:Path"
+            $CargoDir = Split-Path $Cargo
+            if ($CargoDir) {
+                $env:Path = "$CargoDir;$env:Path"
+            }
 
             Write-Step "скачиваю исходники и собираю BUTION…"
             $SourceArchive = Join-Path $TemporaryDir "source.zip"
@@ -121,9 +167,10 @@ try {
     else {
         Write-Step "загружаю официальный llama.cpp с RPC…"
         $LlamaTagUrl = "https://github.com/ggml-org/llama.cpp/releases/download/v0.3.0/nightly-tag.txt"
-        $LlamaTag = (Invoke-WebRequest -UseBasicParsing -Uri $LlamaTagUrl).Content.Trim()
+        $LlamaTagResponse = Invoke-WebRequest -UseBasicParsing -Uri $LlamaTagUrl
+        $LlamaTag = ConvertTo-Utf8Text $LlamaTagResponse.Content
         if ($LlamaTag -notmatch "^b[0-9]+$") {
-            throw "Не удалось определить актуальную сборку llama.cpp."
+            throw "Не удалось определить актуальную сборку llama.cpp: '$LlamaTag'."
         }
         $LlamaAsset = "llama-$LlamaTag-bin-win-cpu-x64.zip"
         $LlamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaTag/$LlamaAsset"
@@ -149,13 +196,15 @@ try {
     }
 
     $Launcher = Join-Path $BinDir "bution.cmd"
-    @"
-@echo off
-"$BinDir\bution-real.exe" --llama-bin-dir "$LlamaDir" %*
-"@ | Set-Content -Encoding ASCII $Launcher
+    $LauncherLines = @(
+        "@echo off",
+        "`"$BinDir\bution-real.exe`" --llama-bin-dir `"$LlamaDir`" %*"
+    )
+    Set-Content -Encoding ASCII -Path $Launcher -Value $LauncherLines
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (($UserPath -split ";") -notcontains $BinDir) {
+    $CurrentPaths = if ($UserPath) { $UserPath -split ";" } else { @() }
+    if ($CurrentPaths -notcontains $BinDir) {
         $NewPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $BinDir } else { "$UserPath;$BinDir" }
         [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
     }

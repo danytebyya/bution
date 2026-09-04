@@ -164,6 +164,10 @@ impl App {
         }
         if self.screen() == Screen::Chat {
             match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('q' | 'Q' | 'c' | 'C')) => {
+                    self.running = false;
+                    return AppAction::None;
+                }
                 (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N' | 'l' | 'L')) => {
                     self.chat_messages.clear();
                     self.chat_input.clear();
@@ -171,8 +175,44 @@ impl App {
                     self.telemetry_collector.set_generation_speed(None);
                     return AppAction::None;
                 }
+                (_, KeyCode::Tab) => {
+                    self.screen_index = (self.screen_index + 1) % Screen::ALL.len();
+                    return AppAction::None;
+                }
+                (_, KeyCode::BackTab) => {
+                    self.screen_index = if self.screen_index == 0 {
+                        Screen::ALL.len() - 1
+                    } else {
+                        self.screen_index - 1
+                    };
+                    return AppAction::None;
+                }
                 (_, KeyCode::Esc) => {
-                    self.screen_index = 0;
+                    if !self.chat_input.is_empty() {
+                        self.chat_input.clear();
+                    } else {
+                        self.screen_index = self.screen_index.saturating_sub(1);
+                    }
+                    return AppAction::None;
+                }
+                (modifiers, KeyCode::Left | KeyCode::Up)
+                    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.screen_index = self.screen_index.saturating_sub(1);
+                    return AppAction::None;
+                }
+                (modifiers, KeyCode::Right | KeyCode::Down)
+                    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.screen_index = (self.screen_index + 1).min(Screen::ALL.len() - 1);
+                    return AppAction::None;
+                }
+                (_, KeyCode::Left | KeyCode::Up) if self.chat_input.is_empty() => {
+                    self.screen_index = self.screen_index.saturating_sub(1);
+                    return AppAction::None;
+                }
+                (_, KeyCode::Right | KeyCode::Down) if self.chat_input.is_empty() => {
+                    self.screen_index = (self.screen_index + 1).min(Screen::ALL.len() - 1);
                     return AppAction::None;
                 }
                 (_, KeyCode::Backspace) if !self.chat_streaming => {
@@ -208,6 +248,16 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q' | 'Q') => self.running = false,
+            KeyCode::Tab => {
+                self.screen_index = (self.screen_index + 1) % Screen::ALL.len();
+            }
+            KeyCode::BackTab => {
+                self.screen_index = if self.screen_index == 0 {
+                    Screen::ALL.len() - 1
+                } else {
+                    self.screen_index - 1
+                };
+            }
             KeyCode::Up | KeyCode::Left => {
                 self.screen_index = self.screen_index.saturating_sub(1);
             }
@@ -346,5 +396,115 @@ impl App {
                 self.push_log(message);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn test_app() -> App {
+        let mut collector = TelemetryCollector::default();
+        let telemetry = collector.sample();
+        App {
+            running: true,
+            screen_index: 0,
+            settings: Settings::default(),
+            paths: AppPaths::discover().unwrap(),
+            hardware: HardwareProfile::detect(),
+            interfaces: Vec::new(),
+            nodes: Vec::new(),
+            model: None,
+            telemetry,
+            logs: VecDeque::new(),
+            pending_pairing: None,
+            cluster_running: false,
+            distribution: Vec::new(),
+            best_route: None,
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
+            chat_streaming: false,
+            telemetry_collector: collector,
+        }
+    }
+
+    #[test]
+    fn arrow_keys_navigate_across_all_screens_including_chat() {
+        let mut app = test_app();
+        assert_eq!(app.screen(), Screen::Cluster);
+
+        // Move forward: 0 -> 1 -> 2 -> 3 -> 4 (Chat) -> 5 (Settings)
+        app.handle_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Nodes);
+
+        app.handle_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Models);
+
+        app.handle_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Benchmark);
+
+        app.handle_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Chat);
+
+        // Navigating right from empty Chat screen must reach Settings!
+        app.handle_key(make_key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Settings);
+
+        // Navigating left from Settings must reach Chat
+        app.handle_key(make_key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Chat);
+
+        // Navigating left from empty Chat must reach Benchmark
+        app.handle_key(make_key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Benchmark);
+    }
+
+    #[test]
+    fn tab_and_backtab_cycle_screens_even_when_chat_has_input() {
+        let mut app = test_app();
+        app.screen_index = 4; // Chat screen
+        app.chat_input = "Hello LLM".into();
+
+        // Tab moves to Settings (5)
+        app.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Settings);
+
+        // Tab wraps around to Cluster (0)
+        app.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Cluster);
+
+        // BackTab wraps to Settings (5)
+        app.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.screen(), Screen::Settings);
+
+        // BackTab moves to Chat (4)
+        app.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.screen(), Screen::Chat);
+    }
+
+    #[test]
+    fn chat_esc_clears_input_then_navigates_back() {
+        let mut app = test_app();
+        app.screen_index = 4; // Chat screen
+        app.chat_input = "draft".into();
+
+        // First Esc clears input text
+        app.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.chat_input.is_empty());
+        assert_eq!(app.screen(), Screen::Chat);
+
+        // Second Esc navigates back to previous screen (Benchmark)
+        app.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.screen(), Screen::Benchmark);
     }
 }

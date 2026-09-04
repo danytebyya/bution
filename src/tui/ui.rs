@@ -526,14 +526,16 @@ fn draw_telemetry(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
-        Paragraph::new("Space: сменить роль (Main/Worker) • Enter: запуск • ← →: экраны • Esc: назад • Q: выход")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(MUTED))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(PANEL)),
-            ),
+        Paragraph::new(
+            "Space: сменить роль • Enter: запуск • Tab / ← →: экраны • Esc: назад • Q: выход",
+        )
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(MUTED))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(PANEL)),
+        ),
         area,
     );
 }

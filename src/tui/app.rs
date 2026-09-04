@@ -1,3 +1,4 @@
+use crate::chat::{ChatEvent, ChatMessage, ChatRole};
 use crate::cluster::{NodeRole, NodeStatus, NodeSummary};
 use crate::hardware::HardwareProfile;
 use crate::models::ModelInfo;
@@ -6,7 +7,7 @@ use crate::runtime::{RuntimeCommand, RuntimeEvent};
 use crate::storage::{AppPaths, Settings};
 use crate::telemetry::{TelemetryCollector, TelemetrySample};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::VecDeque;
 use tokio::sync::oneshot;
 
@@ -21,6 +22,7 @@ pub struct PendingPairing {
 pub enum AppAction {
     None,
     Runtime(RuntimeCommand),
+    SendChat(Vec<ChatMessage>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,9 @@ pub struct App {
     pub pending_pairing: Option<PendingPairing>,
     pub cluster_running: bool,
     pub distribution: Vec<(String, f64)>,
+    pub chat_messages: Vec<ChatMessage>,
+    pub chat_input: String,
+    pub chat_streaming: bool,
     telemetry_collector: TelemetryCollector,
 }
 
@@ -116,6 +121,9 @@ impl App {
             pending_pairing: None,
             cluster_running: false,
             distribution: Vec::new(),
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
+            chat_streaming: false,
             telemetry_collector,
         })
     }
@@ -151,6 +159,50 @@ impl App {
                 _ => {}
             }
             return AppAction::None;
+        }
+        if self.screen() == Screen::Chat {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N' | 'l' | 'L')) => {
+                    self.chat_messages.clear();
+                    self.chat_input.clear();
+                    self.chat_streaming = false;
+                    self.telemetry_collector.set_generation_speed(None);
+                    return AppAction::None;
+                }
+                (_, KeyCode::Esc) => {
+                    self.screen_index = 0;
+                    return AppAction::None;
+                }
+                (_, KeyCode::Backspace) if !self.chat_streaming => {
+                    self.chat_input.pop();
+                    return AppAction::None;
+                }
+                (_, KeyCode::Enter)
+                    if !self.chat_streaming && !self.chat_input.trim().is_empty() =>
+                {
+                    let content = self.chat_input.trim().to_owned();
+                    self.chat_input.clear();
+                    self.chat_messages.push(ChatMessage {
+                        role: ChatRole::User,
+                        content,
+                    });
+                    self.chat_messages.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: String::new(),
+                    });
+                    self.chat_streaming = true;
+                    self.telemetry_collector.set_generation_speed(None);
+                    let request = self.chat_messages[..self.chat_messages.len() - 1].to_vec();
+                    return AppAction::SendChat(request);
+                }
+                (modifiers, KeyCode::Char(character))
+                    if !modifiers.contains(KeyModifiers::CONTROL) && !self.chat_streaming =>
+                {
+                    self.chat_input.push(character);
+                    return AppAction::None;
+                }
+                _ => return AppAction::None,
+            }
         }
         match key.code {
             KeyCode::Char('q' | 'Q') => self.running = false,
@@ -250,6 +302,33 @@ impl App {
             }
             RuntimeEvent::Log(message) => self.push_log(message),
             RuntimeEvent::Error { message, .. } => self.push_log(message),
+        }
+    }
+
+    pub fn apply_chat_event(&mut self, event: ChatEvent) {
+        match event {
+            ChatEvent::Token(token) => {
+                if let Some(message) = self.chat_messages.last_mut() {
+                    if message.role == ChatRole::Assistant {
+                        message.content.push_str(&token);
+                    }
+                }
+            }
+            ChatEvent::Finished { tokens_per_second } => {
+                self.chat_streaming = false;
+                self.telemetry_collector
+                    .set_generation_speed(tokens_per_second);
+                self.refresh_telemetry();
+            }
+            ChatEvent::Error { message, .. } => {
+                self.chat_streaming = false;
+                if let Some(last) = self.chat_messages.last_mut() {
+                    if last.role == ChatRole::Assistant && last.content.is_empty() {
+                        last.content = format!("{message}. Press Enter to try again.");
+                    }
+                }
+                self.push_log(message);
+            }
         }
     }
 }

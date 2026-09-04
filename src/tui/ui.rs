@@ -273,7 +273,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .as_ref()
         .map(|model| model.name.as_str())
         .unwrap_or("No model running");
-    let text = vec![
+    let mut text = vec![
         Line::styled(
             model,
             Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
@@ -283,10 +283,49 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(MUTED),
         ),
         Line::raw(""),
-        Line::raw("Start a model to chat with the cluster."),
-        Line::raw(""),
-        Line::styled("> _", Style::default().fg(CYAN)),
     ];
+    if app.chat_messages.is_empty() {
+        text.push(Line::styled(
+            if app.cluster_running {
+                "Type a message and press Enter."
+            } else {
+                "Start a model from Cluster before chatting."
+            },
+            Style::default().fg(MUTED),
+        ));
+        text.push(Line::raw(""));
+    }
+    for message in &app.chat_messages {
+        let label = match message.role {
+            crate::chat::ChatRole::System => "System:",
+            crate::chat::ChatRole::User => "You:",
+            crate::chat::ChatRole::Assistant => "Assistant:",
+        };
+        text.push(Line::styled(
+            label,
+            Style::default()
+                .fg(if message.role == crate::chat::ChatRole::User {
+                    BLUE
+                } else {
+                    CYAN
+                })
+                .add_modifier(Modifier::BOLD),
+        ));
+        text.extend(message.content.lines().map(Line::raw));
+        if message.role == crate::chat::ChatRole::Assistant
+            && message.content.is_empty()
+            && app.chat_streaming
+        {
+            text.push(Line::styled("▌", Style::default().fg(CYAN)));
+        }
+        text.push(Line::raw(""));
+    }
+    let cursor = if app.chat_streaming {
+        "generating…".into()
+    } else {
+        format!("> {}_", app.chat_input)
+    };
+    text.push(Line::styled(cursor, Style::default().fg(CYAN)));
     frame.render_widget(
         Paragraph::new(text)
             .block(panel("CHAT"))

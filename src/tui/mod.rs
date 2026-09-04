@@ -38,10 +38,17 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
     let mut last_telemetry = Instant::now();
+    let chat_client = crate::chat::ChatClient::local("127.0.0.1:8080".parse()?);
+    let mut chat_events: Option<tokio::sync::mpsc::Receiver<crate::chat::ChatEvent>> = None;
 
     while app.running {
         while let Ok(event) = runtime.events.try_recv() {
             app.apply_runtime_event(event);
+        }
+        if let Some(receiver) = &mut chat_events {
+            while let Ok(event) = receiver.try_recv() {
+                app.apply_chat_event(event);
+            }
         }
         if last_telemetry.elapsed() >= Duration::from_secs(1) {
             app.refresh_telemetry();
@@ -51,8 +58,12 @@ pub async fn run(mut app: App) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let app::AppAction::Runtime(command) = app.handle_key(key) {
-                        runtime.command(command).await?;
+                    match app.handle_key(key) {
+                        app::AppAction::Runtime(command) => runtime.command(command).await?,
+                        app::AppAction::SendChat(messages) => {
+                            chat_events = Some(chat_client.stream_completion(messages, 0.7));
+                        }
+                        app::AppAction::None => {}
                     }
                 }
             }

@@ -2,6 +2,7 @@
 
 pub mod cluster;
 pub mod hardware;
+pub mod storage;
 
 /// Human-readable application name.
 pub const APP_NAME: &str = "BUTION";

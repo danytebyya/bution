@@ -2,7 +2,7 @@ use crate::chat::{ChatEvent, ChatMessage, ChatRole};
 use crate::cluster::{NodeRole, NodeStatus, NodeSummary};
 use crate::hardware::HardwareProfile;
 use crate::models::ModelInfo;
-use crate::network::{NetworkInterface, interfaces};
+use crate::network::{MeasuredRoute, NetworkInterface, interfaces};
 use crate::runtime::{RuntimeCommand, RuntimeEvent};
 use crate::storage::{AppPaths, Settings};
 use crate::telemetry::{TelemetryCollector, TelemetrySample};
@@ -71,6 +71,7 @@ pub struct App {
     pub pending_pairing: Option<PendingPairing>,
     pub cluster_running: bool,
     pub distribution: Vec<(String, f64)>,
+    pub best_route: Option<MeasuredRoute>,
     pub chat_messages: Vec<ChatMessage>,
     pub chat_input: String,
     pub chat_streaming: bool,
@@ -121,6 +122,7 @@ impl App {
             pending_pairing: None,
             cluster_running: false,
             distribution: Vec::new(),
+            best_route: None,
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_streaming: false,
@@ -275,6 +277,15 @@ impl App {
                 self.nodes.retain(|existing| existing.id != node.id);
                 self.push_log(format!("Paired with {}", node.name));
                 self.nodes.push(node);
+            }
+            RuntimeEvent::NetworkMeasured { node_id: _, route } => {
+                self.push_log(format!(
+                    "Selected {}: {:.0} Mbps, {:.1} ms",
+                    route.interface.kind,
+                    route.benchmark.bandwidth.megabits_per_second,
+                    route.benchmark.latency.average_ms
+                ));
+                self.best_route = Some(route);
             }
             RuntimeEvent::PairingRequested {
                 name,

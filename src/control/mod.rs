@@ -6,7 +6,7 @@ use crate::cluster::{
 };
 use crate::hardware::HardwareProfile;
 use crate::llama::{LlamaBinaries, WorkerConfig};
-use crate::network::{NetworkInterface, interfaces};
+use crate::network::{BenchmarkServer, NetworkInterface, interfaces};
 use crate::processes::{ProcessKind, ProcessManager};
 use crate::security::{NoiseChannel, NoiseIdentity, pairing_code, validate_distinct_identity};
 use crate::storage::{AppPaths, Settings, TrustedPeer};
@@ -46,6 +46,7 @@ struct ServerContext {
     binaries: Option<LlamaBinaries>,
     hardware: HardwareProfile,
     processes: Arc<Mutex<ProcessManager>>,
+    network_benchmark: Arc<Mutex<Option<BenchmarkServer>>>,
     events: mpsc::Sender<ControlEvent>,
 }
 
@@ -53,6 +54,7 @@ pub struct ControlServer {
     local_addr: SocketAddr,
     events: mpsc::Receiver<ControlEvent>,
     processes: Arc<Mutex<ProcessManager>>,
+    network_benchmark: Arc<Mutex<Option<BenchmarkServer>>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
 }
@@ -73,6 +75,7 @@ impl ControlServer {
         let (events_sender, events) = mpsc::channel(64);
         let (shutdown, mut shutdown_receiver) = oneshot::channel();
         let processes = Arc::new(Mutex::new(ProcessManager::default()));
+        let network_benchmark = Arc::new(Mutex::new(None));
         let context = ServerContext {
             settings,
             paths,
@@ -80,6 +83,7 @@ impl ControlServer {
             binaries,
             hardware,
             processes: processes.clone(),
+            network_benchmark: network_benchmark.clone(),
             events: events_sender.clone(),
         };
         let task = tokio::spawn(async move {
@@ -112,6 +116,7 @@ impl ControlServer {
             local_addr,
             events,
             processes,
+            network_benchmark,
             shutdown: Some(shutdown),
             task: Some(task),
         })
@@ -137,6 +142,9 @@ impl ControlServer {
             let _ = task.await;
         }
         self.processes.lock().await.stop_all().await;
+        if let Some(server) = self.network_benchmark.lock().await.take() {
+            server.stop().await;
+        }
     }
 }
 
@@ -221,6 +229,35 @@ impl ControlClient {
             ControlMessage::WorkerReady { .. } => Ok(()),
             ControlMessage::Error { message, .. } => bail!("{message}"),
             _ => bail!("peer returned an unexpected worker stop response"),
+        }
+    }
+
+    pub async fn start_network_benchmark(
+        &mut self,
+        bind_address: IpAddr,
+        port: u16,
+    ) -> Result<u16> {
+        self.channel
+            .send(&ControlMessage::StartNetworkBenchmark {
+                bind_address: bind_address.to_string(),
+                port,
+            })
+            .await?;
+        match self.channel.receive().await? {
+            ControlMessage::NetworkBenchmarkReady { port } => Ok(port),
+            ControlMessage::Error { message, .. } => bail!("{message}"),
+            _ => bail!("peer returned an unexpected benchmark response"),
+        }
+    }
+
+    pub async fn stop_network_benchmark(&mut self) -> Result<()> {
+        self.channel
+            .send(&ControlMessage::StopNetworkBenchmark)
+            .await?;
+        match self.channel.receive().await? {
+            ControlMessage::NetworkBenchmarkReady { .. } => Ok(()),
+            ControlMessage::Error { message, .. } => bail!("{message}"),
+            _ => bail!("peer returned an unexpected benchmark stop response"),
         }
     }
 }
@@ -364,6 +401,38 @@ async fn handle_connection(
                     .events
                     .send(ControlEvent::WorkerStopped { remote_address })
                     .await;
+            }
+            ControlMessage::StartNetworkBenchmark { bind_address, port } => {
+                let address: IpAddr = bind_address
+                    .parse()
+                    .context("invalid benchmark bind address")?;
+                if !allowed_rpc_bind(address, &interfaces()?) {
+                    channel
+                        .send(&ControlMessage::Error {
+                            message: "Network test was not opened on an untrusted interface".into(),
+                            detail: Some(format!("Rejected bind address {address}")),
+                        })
+                        .await?;
+                    continue;
+                }
+                let mut benchmark = context.network_benchmark.lock().await;
+                if let Some(server) = benchmark.take() {
+                    server.stop().await;
+                }
+                let server = BenchmarkServer::start(SocketAddr::new(address, port)).await?;
+                let actual_port = server.local_addr().port();
+                *benchmark = Some(server);
+                channel
+                    .send(&ControlMessage::NetworkBenchmarkReady { port: actual_port })
+                    .await?;
+            }
+            ControlMessage::StopNetworkBenchmark => {
+                if let Some(server) = context.network_benchmark.lock().await.take() {
+                    server.stop().await;
+                }
+                channel
+                    .send(&ControlMessage::NetworkBenchmarkReady { port: 0 })
+                    .await?;
             }
             _ => {
                 channel

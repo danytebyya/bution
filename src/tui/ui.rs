@@ -227,7 +227,7 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(panel("MODEL")), area);
 }
 
-fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, _app: &App) {
+fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -240,28 +240,68 @@ fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, _app: &App) {
             horizontal: 2,
             vertical: 2,
         }));
+    let latency = app
+        .best_route
+        .as_ref()
+        .map(|route| route.benchmark.latency.average_ms);
+    let bandwidth = app
+        .best_route
+        .as_ref()
+        .map(|route| route.benchmark.bandwidth.megabits_per_second);
+    let stability = app
+        .best_route
+        .as_ref()
+        .map(|route| route.benchmark.stability);
     frame.render_widget(
         Gauge::default()
             .block(panel("Latency"))
             .gauge_style(Style::default().fg(CYAN))
-            .ratio(0.0)
-            .label("Not tested"),
+            .ratio(
+                latency
+                    .map(|value| (1.0 / (1.0 + value / 5.0)).clamp(0.0, 1.0))
+                    .unwrap_or(0.0),
+            )
+            .label(
+                latency
+                    .map(|value| format!("{value:.1} ms"))
+                    .unwrap_or_else(|| "Not tested".into()),
+            ),
         rows[0],
     );
     frame.render_widget(
         Gauge::default()
             .block(panel("Bandwidth"))
             .gauge_style(Style::default().fg(BLUE))
-            .ratio(0.0)
-            .label("Not tested"),
+            .ratio(
+                bandwidth
+                    .map(|value| (value / 1_000.0).clamp(0.0, 1.0))
+                    .unwrap_or(0.0),
+            )
+            .label(
+                bandwidth
+                    .map(|value| format!("{value:.0} Mbps"))
+                    .unwrap_or_else(|| "Not tested".into()),
+            ),
         rows[1],
     );
     frame.render_widget(
         Gauge::default()
             .block(panel("Stability"))
             .gauge_style(Style::default().fg(Color::Green))
-            .ratio(0.0)
-            .label("Not tested"),
+            .ratio(
+                stability
+                    .map(|value| match value {
+                        crate::network::Stability::Excellent => 1.0,
+                        crate::network::Stability::Good => 0.7,
+                        crate::network::Stability::Unstable => 0.3,
+                    })
+                    .unwrap_or(0.0),
+            )
+            .label(
+                stability
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "Not tested".into()),
+            ),
         rows[2],
     );
     frame.render_widget(panel("NETWORK BENCHMARK"), area);

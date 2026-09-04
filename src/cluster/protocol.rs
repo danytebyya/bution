@@ -43,6 +43,14 @@ pub enum ControlMessage {
         rpc_port: u16,
     },
     StopWorker,
+    StartNetworkBenchmark {
+        bind_address: String,
+        port: u16,
+    },
+    StopNetworkBenchmark,
+    NetworkBenchmarkReady {
+        port: u16,
+    },
     WorkerReady {
         rpc_port: u16,
     },

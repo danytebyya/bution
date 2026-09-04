@@ -6,7 +6,9 @@ use crate::discovery::{DiscoveredNode, DiscoveryAdvertisement, DiscoveryEvent, M
 use crate::hardware::HardwareProfile;
 use crate::llama::{LlamaBinaries, ServerConfig};
 use crate::models::{ModelInfo, RunRecommendation};
-use crate::network::{NetworkInterface, route_candidates};
+use crate::network::{
+    MeasuredRoute, NetworkInterface, route_candidates, run_network_benchmark, select_best_route,
+};
 use crate::optimizer::{NodeCapacity, plan_distribution};
 use crate::processes::{ProcessKind, ProcessManager};
 use crate::security::NoiseIdentity;
@@ -23,6 +25,10 @@ use tokio::task::JoinHandle;
 pub enum RuntimeEvent {
     NodeDiscovered(DiscoveredNode),
     NodePaired(NodeSummary),
+    NetworkMeasured {
+        node_id: uuid::Uuid,
+        route: MeasuredRoute,
+    },
     PairingRequested {
         name: String,
         address: SocketAddr,
@@ -138,6 +144,7 @@ async fn run_loop(
 ) {
     let (pair_sender, mut pair_receiver) = mpsc::channel::<PairOutcome>(16);
     let mut clients = HashMap::new();
+    let mut best_routes: HashMap<uuid::Uuid, MeasuredRoute> = HashMap::new();
     let mut main_processes = ProcessManager::default();
     if binaries.is_none() {
         let _ = events
@@ -211,6 +218,19 @@ async fn run_loop(
                         }
                         clients.insert(info.id, client);
                         let _ = events.send(RuntimeEvent::NodePaired(info)).await;
+                        if let Some(client) = clients.get_mut(&outcome.node.id) {
+                            match benchmark_routes(client, &outcome.node, &local_interfaces).await {
+                                Ok(routes) => {
+                                    if let Some(best) = select_best_route(&routes).cloned() {
+                                        best_routes.insert(outcome.node.id, best.clone());
+                                        let _ = events.send(RuntimeEvent::NetworkMeasured { node_id: outcome.node.id, route: best }).await;
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = events.send(RuntimeEvent::Error { message: format!("Network test with {} could not complete", outcome.node.name), detail: format!("{error:#}") }).await;
+                                }
+                            }
+                        }
                     }
                     Err(error) => {
                         let _ = events.send(RuntimeEvent::Error {
@@ -234,6 +254,7 @@ async fn run_loop(
                         &local_interfaces,
                         binaries.as_ref(),
                         &mut clients,
+                        &best_routes,
                         &mut main_processes,
                     ).await;
                     match result {
@@ -264,6 +285,7 @@ async fn start_model(
     local_interfaces: &[NetworkInterface],
     binaries: Option<&LlamaBinaries>,
     clients: &mut HashMap<uuid::Uuid, ControlClient>,
+    best_routes: &HashMap<uuid::Uuid, MeasuredRoute>,
     processes: &mut ProcessManager,
 ) -> Result<Vec<(String, f64)>> {
     let binaries = binaries.context("llama.cpp binaries are not configured")?;
@@ -290,11 +312,16 @@ async fn start_model(
     let mut config = ServerConfig::local(model_path);
     let distribution = if fit.recommendation == RunRecommendation::Cluster {
         let remote = remote_info.context("a paired worker is required for this model")?;
-        let route = route_candidates(local_interfaces, &remote.addresses)
-            .into_iter()
-            .next()
+        let remote_address = best_routes
+            .get(&remote.id)
+            .map(|route| route.remote_address)
+            .or_else(|| {
+                route_candidates(local_interfaces, &remote.addresses)
+                    .into_iter()
+                    .next()
+                    .map(|route| route.1)
+            })
             .context("no direct trusted LAN route to the worker")?;
-        let remote_address = route.1;
         let client = clients
             .get_mut(&remote.id)
             .context("paired worker connection was lost")?;
@@ -338,4 +365,35 @@ fn preferred_control_address(node: &DiscoveredNode) -> Option<SocketAddr> {
         .find(|address| address.is_ipv4())
         .or_else(|| node.addresses.first().copied())
         .map(|address| SocketAddr::new(address, node.control_port))
+}
+
+async fn benchmark_routes(
+    client: &mut ControlClient,
+    node: &DiscoveredNode,
+    local_interfaces: &[NetworkInterface],
+) -> Result<Vec<MeasuredRoute>> {
+    let candidates = route_candidates(local_interfaces, &node.addresses);
+    let mut measurements = Vec::new();
+    for (interface, remote_address) in candidates {
+        if remote_address.is_ipv6() {
+            continue;
+        }
+        let requested_port = node.control_port.saturating_add(1);
+        let port = client
+            .start_network_benchmark(remote_address, requested_port)
+            .await?;
+        let result = run_network_benchmark(SocketAddr::new(remote_address, port)).await;
+        let _ = client.stop_network_benchmark().await;
+        if let Ok(benchmark) = result {
+            measurements.push(MeasuredRoute {
+                interface,
+                remote_address,
+                benchmark,
+            });
+        }
+    }
+    if measurements.is_empty() {
+        bail!("no LAN route completed the network benchmark");
+    }
+    Ok(measurements)
 }

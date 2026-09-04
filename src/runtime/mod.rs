@@ -15,7 +15,7 @@ use crate::security::NoiseIdentity;
 use crate::storage::{AppPaths, Settings, TrustedPeer};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,6 +144,7 @@ async fn run_loop(
 ) {
     let (pair_sender, mut pair_receiver) = mpsc::channel::<PairOutcome>(16);
     let mut clients = HashMap::new();
+    let mut pairing_in_progress = HashSet::new();
     let mut best_routes: HashMap<uuid::Uuid, MeasuredRoute> = HashMap::new();
     let mut main_processes = ProcessManager::default();
     if binaries.is_none() {
@@ -160,7 +161,10 @@ async fn run_loop(
                 Ok(DiscoveryEvent::Found(node)) => {
                     let _ = events.send(RuntimeEvent::NodeDiscovered(node.clone())).await;
                     let local_id = settings.lock().await.node_id;
-                    if local_id < node.id && !clients.contains_key(&node.id) {
+                    if local_id < node.id
+                        && !clients.contains_key(&node.id)
+                        && pairing_in_progress.insert(node.id)
+                    {
                         if let Some(address) = preferred_control_address(&node) {
                             let sender = pair_sender.clone();
                             let identity = identity.clone();
@@ -203,7 +207,9 @@ async fn run_loop(
                 }
                 None => break,
             },
-            Some(outcome) = pair_receiver.recv() => match outcome.result {
+            Some(outcome) = pair_receiver.recv() => {
+                pairing_in_progress.remove(&outcome.node.id);
+                match outcome.result {
                 Ok(mut client) => match client.node_info().await {
                     Ok(info) => {
                         {
@@ -245,7 +251,7 @@ async fn run_loop(
                         detail: format!("{error:#}"),
                     }).await;
                 }
-            },
+            }},
             Some(command) = commands.recv() => match command {
                 RuntimeCommand::StartModel(model) => {
                     let result = start_model(

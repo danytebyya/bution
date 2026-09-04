@@ -227,12 +227,17 @@ impl App {
                 }
                 self.push_log("Select a GGUF model with --model first".into());
             }
-            KeyCode::Char(' ') if self.screen() == Screen::Settings => {
+            KeyCode::Char(' ' | 'r' | 'R')
+                if self.screen() == Screen::Cluster || self.screen() == Screen::Settings =>
+            {
                 self.settings.role = match self.settings.role {
                     NodeRole::Automatic => NodeRole::Main,
                     NodeRole::Main => NodeRole::Worker,
                     NodeRole::Worker => NodeRole::Automatic,
                 };
+                if let Some(local) = self.nodes.first_mut() {
+                    local.role = self.settings.role;
+                }
                 if let Err(error) = self.settings.save(&self.paths) {
                     self.push_log(format!("Settings could not be saved: {error}"));
                 } else {

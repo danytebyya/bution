@@ -108,65 +108,130 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .model
         .as_ref()
         .map(|model| model.name.as_str())
-        .unwrap_or("No model selected");
+        .unwrap_or("Не выбрана (запустите с --model /путь/к/model.gguf)");
+    let role_badge = match app.settings.role {
+        crate::cluster::NodeRole::Automatic => "Automatic",
+        crate::cluster::NodeRole::Main => "Main (Контроллер)",
+        crate::cluster::NodeRole::Worker => "Worker (Дополнительный узел)",
+    };
     let mut text = vec![
         Line::styled(
             if app.cluster_running {
-                "MODEL RUNNING"
+                "● КЛАСТЕР АКТИВЕН • МОДЕЛЬ ЗАПУЩЕНА"
             } else {
-                "CLUSTER READY"
+                match app.settings.role {
+                    crate::cluster::NodeRole::Worker => {
+                        "● РЕЖИМ WORKER (Ожидание подключения Main)"
+                    }
+                    crate::cluster::NodeRole::Main => "● РЕЖИМ MAIN (Готов к запуску модели)",
+                    crate::cluster::NodeRole::Automatic => {
+                        "● КЛАСТЕР ГОТОВ (Автоматический выбор роли)"
+                    }
+                }
             },
             Style::default()
-                .fg(Color::Green)
+                .fg(if app.cluster_running {
+                    Color::Green
+                } else {
+                    BLUE_ACCENT
+                })
                 .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("Node     ", Style::default().fg(MUTED)),
-            Span::raw(&app.settings.node_name),
+            Span::styled("Компьютер:   ", Style::default().fg(MUTED)),
+            Span::styled(
+                &app.settings.node_name,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Role     ", Style::default().fg(MUTED)),
-            Span::raw(format!("{:?}", app.settings.role)),
+            Span::styled("Роль узла:   ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!("[ {role_badge} ]"),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  (нажмите Space для смены: Main / Worker / Auto)",
+                Style::default().fg(MUTED),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Backend  ", Style::default().fg(MUTED)),
+            Span::styled("Backend:     ", Style::default().fg(MUTED)),
             Span::raw(app.hardware.backend.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Memory   ", Style::default().fg(MUTED)),
-            Span::raw(format!(
-                "{:.1} GiB available for AI",
-                app.hardware.ai_memory_gib()
-            )),
+            Span::styled("Память AI:   ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!(
+                    "{:.1} GiB доступно для вычислений",
+                    app.hardware.ai_memory_gib()
+                ),
+                Style::default().fg(Color::Green),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Model    ", Style::default().fg(MUTED)),
-            Span::raw(model),
+            Span::styled("Модель:      ", Style::default().fg(MUTED)),
+            Span::styled(
+                model,
+                if app.model.is_some() {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(MUTED)
+                },
+            ),
         ]),
         Line::raw(""),
-        Line::styled(
-            if app.cluster_running {
-                "Enter stops the model and all workers"
-            } else {
-                "Enter starts the selected model • Waiting for trusted nodes…"
-            },
-            Style::default().fg(BLUE),
-        ),
     ];
+
+    if app.cluster_running {
+        text.push(Line::styled(
+            "▶ Нажмите [ Enter ] для остановки модели и освобождения памяти",
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if app.settings.role == crate::cluster::NodeRole::Worker {
+        text.push(Line::styled(
+            "⏳ Узел готов принимать тензоры от Main компьютера по сети (llama.cpp RPC)",
+            Style::default().fg(BLUE_ACCENT),
+        ));
+    } else if app.model.is_some() {
+        text.push(Line::styled(
+            "▶ Нажмите [ Enter ] для запуска распределённого кластера",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        text.push(Line::styled(
+            "ℹ Запустите с --model \"/путь/к/model.gguf\" или нажмите Space для переключения в Worker",
+            Style::default().fg(BLUE_ACCENT),
+        ));
+    }
+
     if !app.distribution.is_empty() {
         text.push(Line::raw(""));
         text.push(Line::styled(
-            "DISTRIBUTION",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            "РАСПРЕДЕЛЕНИЕ СЛОЁВ ТЕНЗОРОВ (TENSOR SPLIT)",
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ));
         for (name, fraction) in &app.distribution {
-            text.push(Line::raw(format!("{name:<18} {:>3.0}%", fraction * 100.0)));
+            let pct = (fraction * 100.0).round() as usize;
+            let bar_len = pct / 5;
+            let bar = "█".repeat(bar_len) + &"░".repeat(20 - bar_len);
+            text.push(Line::from(vec![
+                Span::raw(format!("  {name:<18} ")),
+                Span::styled(format!("[{bar}]"), Style::default().fg(BLUE_ACCENT)),
+                Span::styled(format!(" {pct:>3}%"), Style::default().fg(Color::White)),
+            ]));
         }
     }
     frame.render_widget(
         Paragraph::new(text)
-            .block(panel("CLUSTER"))
+            .block(panel("КЛАСТЕР / CLUSTER"))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -461,7 +526,7 @@ fn draw_telemetry(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
-        Paragraph::new("↑ ↓ move   ← → tabs   Enter select   Esc back   Space toggle   Q exit")
+        Paragraph::new("Space: сменить роль (Main/Worker) • Enter: запуск • ← →: экраны • Esc: назад • Q: выход")
             .alignment(Alignment::Center)
             .style(Style::default().fg(MUTED))
             .block(
@@ -477,34 +542,49 @@ fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(pairing) = &app.pending_pairing else {
         return;
     };
-    let popup = centered_rect(52, 13, area);
+    let popup = centered_rect(58, 14, area);
     frame.render_widget(Clear, popup);
     let accept = if pairing.accept_selected {
-        "[ Accept ]"
+        "▶ [ ✔ ПОДТВЕРДИТЬ / ACCEPT ]"
     } else {
-        "  Accept  "
+        "   [ ✔ Подтвердить ]   "
     };
     let reject = if pairing.accept_selected {
-        "  Reject  "
+        "   [ ✖ Отклонить ]   "
     } else {
-        "[ Reject ]"
+        "▶ [ ✖ ОТКЛОНИТЬ / REJECT ]"
     };
     let text = vec![
         Line::styled(
-            "New node detected",
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw(&pairing.name),
-        Line::styled(pairing.address.to_string(), Style::default().fg(MUTED)),
-        Line::raw(""),
-        Line::styled("Pairing code", Style::default().fg(MUTED)),
-        Line::styled(
-            &pairing.code,
+            "ОБНАРУЖЕН НОВЫЙ КОМПЬЮТЕР В СЕТИ",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(BLUE_ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Узел:   ", Style::default().fg(MUTED)),
+            Span::styled(
+                &pairing.name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" ({})", pairing.address),
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Код проверки:  ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!(" [ {} ] ", &pairing.code),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::raw(""),
         Line::from(vec![
             Span::styled(
@@ -517,7 +597,7 @@ fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(MUTED)
                 },
             ),
-            Span::raw("     "),
+            Span::raw("  "),
             Span::styled(
                 reject,
                 if pairing.accept_selected {
@@ -527,11 +607,16 @@ fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 },
             ),
         ]),
+        Line::raw(""),
+        Line::styled(
+            "← → / Space: переключение • Enter: подтвердить • Esc: отмена",
+            Style::default().fg(MUTED),
+        ),
     ];
     frame.render_widget(
         Paragraph::new(text)
             .alignment(Alignment::Center)
-            .block(panel("PAIRING")),
+            .block(panel("СОПРЯЖЕНИЕ УЗЛОВ / PAIRING")),
         popup,
     );
 }

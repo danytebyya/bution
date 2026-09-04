@@ -31,6 +31,7 @@ pub enum ControlMessage {
     PairRequest(PairRequest),
     PairResponse(PairResponse),
     NodeInfo(NodeSummary),
+    GetNodeInfo,
     Ping {
         nonce: u64,
     },

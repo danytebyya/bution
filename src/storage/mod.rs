@@ -14,6 +14,7 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     pub settings_file: PathBuf,
     pub identity_file: PathBuf,
+    pub noise_identity_file: PathBuf,
     pub cache_dir: PathBuf,
 }
 
@@ -25,6 +26,7 @@ impl AppPaths {
         Ok(Self {
             settings_file: data_dir.join("settings.toml"),
             identity_file: data_dir.join("identity.key"),
+            noise_identity_file: data_dir.join("noise-identity.key"),
             cache_dir: project.cache_dir().to_path_buf(),
             data_dir,
         })
@@ -35,6 +37,7 @@ impl AppPaths {
         Self {
             settings_file: data_dir.join("settings.toml"),
             identity_file: data_dir.join("identity.key"),
+            noise_identity_file: data_dir.join("noise-identity.key"),
             cache_dir: data_dir.join("cache"),
             data_dir,
         }

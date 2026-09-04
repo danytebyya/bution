@@ -2,6 +2,7 @@
 
 pub mod benchmark;
 pub mod cluster;
+pub mod control;
 pub mod discovery;
 pub mod hardware;
 pub mod llama;

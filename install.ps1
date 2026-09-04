@@ -10,13 +10,14 @@ catch {
 
 function Show-Banner {
     Write-Host ""
-    Write-Host "  ____  _   _ _____ ___ ___  _   _ " -ForegroundColor Cyan
-    Write-Host " | __ )| | | |_   _|_ _/ _ \| \ | |" -ForegroundColor Cyan
-    Write-Host " |  _ \| | | | | |  | | | | |  \| |" -ForegroundColor Cyan
-    Write-Host " | |_) | |_| | | |  | | |_| | |\  |" -ForegroundColor Cyan
-    Write-Host " |____/ \___/  |_| |___\___/|_| \_|" -ForegroundColor Cyan
+    Write-Host "██████╗ ██╗   ██╗████████╗██╗ ██████╗ ███╗   ██╗" -ForegroundColor Blue
+    Write-Host "██╔══██╗██║   ██║╚══██╔══╝██║██╔═══██╗████╗  ██║" -ForegroundColor Blue
+    Write-Host "██████╔╝██║   ██║   ██║   ██║██║   ██║██╔██╗ ██║" -ForegroundColor Blue
+    Write-Host "██╔══██╗██║   ██║   ██║   ██║██║   ██║██║╚██╗██║" -ForegroundColor Blue
+    Write-Host "██████╔╝╚██████╔╝   ██║   ██║╚██████╔╝██║ ╚████║" -ForegroundColor Blue
+    Write-Host "╚═════╝  ╚═════╝    ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝" -ForegroundColor Blue
     Write-Host ""
-    Write-Host " ⚡ BUTION" -ForegroundColor Yellow -NoNewline
+    Write-Host " ⚡ BUTION" -ForegroundColor Blue -NoNewline
     Write-Host " — распределённый запуск LLM в локальной сети" -ForegroundColor White
     Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
     Write-Host ""

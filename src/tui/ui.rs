@@ -13,22 +13,23 @@ const LOGO: &str = r#"██████╗ ██╗   ██╗█████
 ██████╔╝╚██████╔╝   ██║   ██║╚██████╔╝██║ ╚████║
 ╚═════╝  ╚═════╝    ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝"#;
 
-const CYAN: Color = Color::Rgb(76, 201, 240);
-const BLUE: Color = Color::Rgb(67, 97, 238);
+const BLUE: Color = Color::Rgb(59, 130, 246);
+const BLUE_ACCENT: Color = Color::Rgb(96, 165, 250);
 const MUTED: Color = Color::Rgb(125, 133, 151);
 const PANEL: Color = Color::Rgb(30, 35, 48);
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    let show_logo = area.height >= 30 && area.width >= 54;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if area.height >= 32 { 9 } else { 3 }),
+            Constraint::Length(if show_logo { 8 } else { 3 }),
             Constraint::Min(12),
             Constraint::Length(3),
         ])
         .split(area);
-    draw_header(frame, rows[0], area.height >= 32);
+    draw_header(frame, rows[0], show_logo);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -49,7 +50,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 fn draw_header(frame: &mut Frame<'_>, area: Rect, show_logo: bool) {
     let text = if show_logo {
         let mut text =
-            Text::from(LOGO).style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
+            Text::from(LOGO).style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD));
         text.lines.push(Line::styled(
             "Distributed Local AI Cluster",
             Style::default().fg(MUTED),
@@ -59,7 +60,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, show_logo: bool) {
         Text::from(Line::from(vec![
             Span::styled(
                 "BUTION",
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             ),
             Span::styled("  Distributed Local AI Cluster", Style::default().fg(MUTED)),
         ]))
@@ -70,7 +71,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, show_logo: bool) {
 fn panel(title: &str) -> Block<'_> {
     Block::default()
         .title(format!(" {title} "))
-        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
+        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(PANEL))
 }
@@ -82,7 +83,7 @@ fn draw_navigation(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ListItem::new(Line::from(Span::styled(
             format!("{prefix}{}", screen.label()),
             if selected {
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(MUTED)
             },
@@ -150,7 +151,7 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 "Enter starts the selected model • Waiting for trusted nodes…"
             },
-            Style::default().fg(CYAN),
+            Style::default().fg(BLUE),
         ),
     ];
     if !app.distribution.is_empty() {
@@ -197,7 +198,7 @@ fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
         vec![
             Line::styled(
                 &model.name,
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             ),
             Line::raw(""),
             Line::raw(format!(
@@ -255,7 +256,7 @@ fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Gauge::default()
             .block(panel("Latency"))
-            .gauge_style(Style::default().fg(CYAN))
+            .gauge_style(Style::default().fg(BLUE))
             .ratio(
                 latency
                     .map(|value| (1.0 / (1.0 + value / 5.0)).clamp(0.0, 1.0))
@@ -271,7 +272,7 @@ fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Gauge::default()
             .block(panel("Bandwidth"))
-            .gauge_style(Style::default().fg(BLUE))
+            .gauge_style(Style::default().fg(BLUE_ACCENT))
             .ratio(
                 bandwidth
                     .map(|value| (value / 1_000.0).clamp(0.0, 1.0))
@@ -316,7 +317,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut text = vec![
         Line::styled(
             model,
-            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ),
         Line::styled(
             format!("{} Node(s)", app.nodes.len()),
@@ -345,9 +346,9 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
             label,
             Style::default()
                 .fg(if message.role == crate::chat::ChatRole::User {
-                    BLUE
+                    BLUE_ACCENT
                 } else {
-                    CYAN
+                    BLUE
                 })
                 .add_modifier(Modifier::BOLD),
         ));
@@ -356,7 +357,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
             && message.content.is_empty()
             && app.chat_streaming
         {
-            text.push(Line::styled("▌", Style::default().fg(CYAN)));
+            text.push(Line::styled("▌", Style::default().fg(BLUE)));
         }
         text.push(Line::raw(""));
     }
@@ -365,7 +366,7 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         format!("> {}_", app.chat_input)
     };
-    text.push(Line::styled(cursor, Style::default().fg(CYAN)));
+    text.push(Line::styled(cursor, Style::default().fg(BLUE)));
     frame.render_widget(
         Paragraph::new(text)
             .block(panel("CHAT"))
@@ -389,7 +390,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled("Mode             ", Style::default().fg(MUTED)),
             Span::styled(
                 format!("{:?}", app.settings.role),
-                Style::default().fg(CYAN),
+                Style::default().fg(BLUE),
             ),
         ]),
         Line::from(vec![
@@ -407,7 +408,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::raw(""),
         Line::styled(
             "Space cycles Automatic / Main / Worker",
-            Style::default().fg(CYAN),
+            Style::default().fg(BLUE),
         ),
     ];
     frame.render_widget(Paragraph::new(text).block(panel("SETTINGS")), area);
@@ -421,7 +422,7 @@ fn draw_telemetry(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = vec![
         Line::styled(
             &app.settings.node_name,
-            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ),
         Line::raw(format!("RAM  {used:.1} / {total:.1} GiB")),
         Line::raw(format!("CPU  {:.0}%", sample.cpu_percent)),
@@ -491,7 +492,7 @@ fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let text = vec![
         Line::styled(
             "New node detected",
-            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
         Line::raw(&pairing.name),

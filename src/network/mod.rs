@@ -1,5 +1,9 @@
 //! Local interface inventory and safe LAN route candidates.
 
+mod benchmark;
+
+pub use benchmark::{BenchmarkServer, LatencyStats, measure_latency};
+
 use anyhow::{Context, Result};
 use if_addrs::{IfAddr, get_if_addrs};
 use serde::{Deserialize, Serialize};

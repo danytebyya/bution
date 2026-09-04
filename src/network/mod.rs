@@ -2,7 +2,10 @@
 
 mod benchmark;
 
-pub use benchmark::{BenchmarkServer, LatencyStats, measure_latency};
+pub use benchmark::{
+    BandwidthStats, BenchmarkServer, LatencyStats, NetworkBenchmark, Stability, measure_bandwidth,
+    measure_latency, run_network_benchmark,
+};
 
 use anyhow::{Context, Result};
 use if_addrs::{IfAddr, get_if_addrs};

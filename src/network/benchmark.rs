@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -16,6 +16,27 @@ pub struct LatencyStats {
     pub minimum_ms: f64,
     pub jitter_ms: f64,
     pub success_rate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BandwidthStats {
+    pub megabits_per_second: f64,
+    pub transferred_bytes: u64,
+    pub elapsed_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Stability {
+    Excellent,
+    Good,
+    Unstable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NetworkBenchmark {
+    pub latency: LatencyStats,
+    pub bandwidth: BandwidthStats,
+    pub stability: Stability,
 }
 
 pub struct BenchmarkServer {
@@ -85,7 +106,37 @@ async fn handle_connection(stream: TcpStream) {
     }
     if request.trim() == format!("{MAGIC} PING") {
         let _ = stream.get_mut().write_all(b"PONG\n").await;
+        return;
     }
+    let mut parts = request.split_whitespace();
+    let download_size = if parts.next() == Some(MAGIC) && parts.next() == Some("DOWNLOAD") {
+        parts.next().and_then(|value| value.parse::<usize>().ok())
+    } else {
+        None
+    };
+    if let Some(requested) = download_size {
+        let size = requested.min(64 * 1024 * 1024);
+        let chunk = [0x42_u8; 64 * 1024];
+        let mut remaining = size;
+        while remaining > 0 {
+            let count = remaining.min(chunk.len());
+            if stream.get_mut().write_all(&chunk[..count]).await.is_err() {
+                break;
+            }
+            remaining -= count;
+        }
+    }
+}
+
+pub async fn run_network_benchmark(target: SocketAddr) -> Result<NetworkBenchmark> {
+    let latency = measure_latency(target, 8).await?;
+    let bandwidth = measure_bandwidth(target, 8 * 1024 * 1024).await?;
+    let stability = classify_stability(&latency);
+    Ok(NetworkBenchmark {
+        latency,
+        bandwidth,
+        stability,
+    })
 }
 
 pub async fn measure_latency(target: SocketAddr, samples: usize) -> Result<LatencyStats> {
@@ -136,6 +187,47 @@ async fn ping_once(target: SocketAddr) -> Result<Duration> {
     Ok(started.elapsed())
 }
 
+pub async fn measure_bandwidth(target: SocketAddr, bytes: usize) -> Result<BandwidthStats> {
+    if !(64 * 1024..=64 * 1024 * 1024).contains(&bytes) {
+        bail!("bandwidth sample must be between 64 KiB and 64 MiB");
+    }
+    let mut stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(target))
+        .await
+        .context("bandwidth connection timed out")??;
+    stream
+        .write_all(format!("{MAGIC} DOWNLOAD {bytes}\n").as_bytes())
+        .await?;
+    let started = Instant::now();
+    let mut received = 0_usize;
+    let mut buffer = [0_u8; 64 * 1024];
+    while received < bytes {
+        let limit = (bytes - received).min(buffer.len());
+        let count = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer[..limit]))
+            .await
+            .context("bandwidth transfer timed out")??;
+        if count == 0 {
+            bail!("peer closed the bandwidth transfer early");
+        }
+        received += count;
+    }
+    let elapsed = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    Ok(BandwidthStats {
+        megabits_per_second: received as f64 * 8.0 / elapsed / 1_000_000.0,
+        transferred_bytes: received as u64,
+        elapsed_seconds: elapsed,
+    })
+}
+
+pub fn classify_stability(latency: &LatencyStats) -> Stability {
+    if latency.success_rate >= 0.99 && latency.jitter_ms <= 2.0 {
+        Stability::Excellent
+    } else if latency.success_rate >= 0.9 && latency.jitter_ms <= 10.0 {
+        Stability::Good
+    } else {
+        Stability::Unstable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +240,19 @@ mod tests {
         let stats = measure_latency(server.local_addr(), 3).await.unwrap();
         assert_eq!(stats.success_rate, 1.0);
         assert!(stats.average_ms >= 0.0);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn measures_bandwidth_against_local_server() {
+        let server = BenchmarkServer::start("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let stats = measure_bandwidth(server.local_addr(), 128 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(stats.transferred_bytes, 128 * 1024);
+        assert!(stats.megabits_per_second > 0.0);
         server.stop().await;
     }
 }

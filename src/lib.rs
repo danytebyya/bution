@@ -6,6 +6,7 @@ pub mod hardware;
 pub mod llama;
 pub mod models;
 pub mod network;
+pub mod optimizer;
 pub mod processes;
 pub mod security;
 pub mod storage;

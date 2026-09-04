@@ -1,11 +1,13 @@
 //! Local interface inventory and safe LAN route candidates.
 
 mod benchmark;
+mod score;
 
 pub use benchmark::{
     BandwidthStats, BenchmarkServer, LatencyStats, NetworkBenchmark, Stability, measure_bandwidth,
     measure_latency, run_network_benchmark,
 };
+pub use score::{MeasuredRoute, network_score, select_best_route};
 
 use anyhow::{Context, Result};
 use if_addrs::{IfAddr, get_if_addrs};

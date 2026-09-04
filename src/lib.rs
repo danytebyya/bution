@@ -2,6 +2,7 @@
 
 pub mod cluster;
 pub mod hardware;
+pub mod security;
 pub mod storage;
 
 /// Human-readable application name.

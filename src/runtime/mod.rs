@@ -39,6 +39,10 @@ pub enum RuntimeEvent {
         distribution: Vec<(String, f64)>,
     },
     ClusterStopped,
+    UpdateAvailable {
+        latest_version: String,
+        current_version: String,
+    },
     Log(String),
     Error {
         message: String,
@@ -92,6 +96,26 @@ impl RuntimeHandle {
         let discovery = MdnsDiscovery::start(advertisement)?;
         let (events_sender, events) = mpsc::channel(128);
         let (commands, command_receiver) = mpsc::channel(16);
+
+        // Non-blocking background check for updates (skipped instantly if offline)
+        let update_sender = events_sender.clone();
+        tokio::spawn(async move {
+            if let Some(info) = crate::update::check_latest_release("danytebyya/bution", 2).await {
+                let _ = update_sender
+                    .send(RuntimeEvent::UpdateAvailable {
+                        latest_version: info.latest_version.clone(),
+                        current_version: info.current_version.clone(),
+                    })
+                    .await;
+                let _ = update_sender
+                    .send(RuntimeEvent::Log(format!(
+                        "⚡ Доступно обновление: {} (текущая: v{}). Для обновления: bution --update",
+                        info.latest_version, info.current_version
+                    )))
+                    .await;
+            }
+        });
+
         let task = tokio::spawn(run_loop(
             settings,
             paths,

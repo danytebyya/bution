@@ -75,6 +75,7 @@ pub struct App {
     pub chat_messages: Vec<ChatMessage>,
     pub chat_input: String,
     pub chat_streaming: bool,
+    pub update_available: Option<String>,
     telemetry_collector: TelemetryCollector,
 }
 
@@ -126,6 +127,7 @@ impl App {
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_streaming: false,
+            update_available: None,
             telemetry_collector,
         })
     }
@@ -366,6 +368,9 @@ impl App {
                 self.distribution.clear();
                 self.push_log("Cluster stopped cleanly".into());
             }
+            RuntimeEvent::UpdateAvailable { latest_version, .. } => {
+                self.update_available = Some(latest_version);
+            }
             RuntimeEvent::Log(message) => self.push_log(message),
             RuntimeEvent::Error { message, .. } => self.push_log(message),
         }
@@ -434,6 +439,7 @@ mod tests {
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_streaming: false,
+            update_available: None,
             telemetry_collector: collector,
         }
     }

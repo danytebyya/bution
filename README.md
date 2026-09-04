@@ -128,6 +128,15 @@ BUTION автоматически измерит скорость всех до�
 
 ## 🔄 Обновление
 
+При наличии подключения к интернету BUTION в фоновом режиме проверяет наличие обновлений без задержки запуска.
+
+Для автоматического обновления до актуальной версии:
+```bash
+bution --update
+```
+
+Или через скрипт переустановки:
+
 **macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash

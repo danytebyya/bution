@@ -23,6 +23,10 @@ struct Cli {
     /// Override the persisted node role.
     #[arg(long, value_enum)]
     role: Option<RoleArg>,
+
+    /// Check for updates and update BUTION to the latest version.
+    #[arg(long, short = 'u')]
+    update: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -45,6 +49,9 @@ impl From<RoleArg> for NodeRole {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.update {
+        return bution::update::run_cli_update().await;
+    }
     let mut app = App::load()?;
     let mut settings_changed = false;
 

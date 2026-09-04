@@ -442,7 +442,33 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let trust = app.settings.trusted_peers.len();
+    let version_line = if let Some(new_ver) = &app.update_available {
+        Line::from(vec![
+            Span::styled("Version          ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!("v{} ", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!("(Доступно обновление: {new_ver} ⚡)"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Version          ", Style::default().fg(MUTED)),
+            Span::styled(
+                format!("v{} ", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("(актуальная)", Style::default().fg(Color::Green)),
+        ])
+    };
+
     let text = vec![
+        version_line,
         Line::from(vec![
             Span::styled("Node name       ", Style::default().fg(MUTED)),
             Span::raw(&app.settings.node_name),
@@ -472,7 +498,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         Line::raw(""),
         Line::styled(
-            "Space cycles Automatic / Main / Worker",
+            "Space: сменить роль • bution --update: обновить",
             Style::default().fg(BLUE),
         ),
     ];

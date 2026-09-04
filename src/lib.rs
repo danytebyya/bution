@@ -14,6 +14,7 @@ pub mod processes;
 pub mod security;
 pub mod storage;
 pub mod telemetry;
+pub mod tui;
 
 /// Human-readable application name.
 pub const APP_NAME: &str = "BUTION";

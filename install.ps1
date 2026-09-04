@@ -1,9 +1,115 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+}
+catch {
+    # ignore if console encoding cannot be changed
+}
 
-function Write-Step([string]$Message) {
-    Write-Host "BUTION $Message" -ForegroundColor Cyan
+function Show-Banner {
+    Write-Host ""
+    Write-Host "  ____  _   _ _____ ___ ___  _   _ " -ForegroundColor Cyan
+    Write-Host " | __ )| | | |_   _|_ _/ _ \| \ | |" -ForegroundColor Cyan
+    Write-Host " |  _ \| | | | | |  | | | | |  \| |" -ForegroundColor Cyan
+    Write-Host " | |_) | |_| | | |  | | |_| | |\  |" -ForegroundColor Cyan
+    Write-Host " |____/ \___/  |_| |___\___/|_| \_|" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host " ⚡ BUTION" -ForegroundColor Yellow -NoNewline
+    Write-Host " — распределённый запуск LLM в локальной сети" -ForegroundColor White
+    Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Write-StepHeader([string]$Num, [string]$Title) {
+    Write-Host "[$Num] " -ForegroundColor Blue -NoNewline
+    Write-Host $Title -ForegroundColor White
+}
+
+function Write-Success([string]$Message) {
+    Write-Host "       ✔ " -ForegroundColor Green -NoNewline
+    Write-Host $Message -ForegroundColor Gray
+}
+
+function Write-Info([string]$Message) {
+    Write-Host "       ℹ " -ForegroundColor DarkCyan -NoNewline
+    Write-Host $Message -ForegroundColor DarkGray
+}
+
+function Write-Fail([string]$Message) {
+    Write-Host "`n✖ Ошибка: " -ForegroundColor Red -NoNewline
+    Write-Host $Message -ForegroundColor White
+    throw $Message
+}
+
+function Download-FileWithProgress([string]$Url, [string]$Destination) {
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.UserAgent = "BUTION-Installer"
+    $request.Timeout = 60000
+    $request.AllowAutoRedirect = $true
+
+    $response = $request.GetResponse()
+    $totalBytes = $response.ContentLength
+    $responseStream = $response.GetResponseStream()
+    $fileStream = [System.IO.File]::Create($Destination)
+
+    $buffer = New-Object byte[] 65536
+    $downloadedBytes = 0
+    $lastUpdate = [System.Diagnostics.Stopwatch]::StartNew()
+    $barWidth = 26
+    $isInteractive = [Environment]::UserInteractive -and (-not [Console]::IsOutputRedirected)
+
+    try {
+        while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $downloadedBytes += $bytesRead
+
+            if ($isInteractive -and ($lastUpdate.ElapsedMilliseconds -gt 70 -or $downloadedBytes -ge $totalBytes)) {
+                $lastUpdate.Restart()
+                if ($totalBytes -gt 0) {
+                    $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
+                    $filled = [int](($percent / 100) * $barWidth)
+                    $empty = $barWidth - $filled
+                    $bar = ("█" * $filled) + ("░" * $empty)
+                    $currMb = ($downloadedBytes / 1MB).ToString("0.0")
+                    $totalMb = ($totalBytes / 1MB).ToString("0.0")
+                    $line = "`r       [$bar] $percent% ($currMb / $totalMb MB)  "
+                    Write-Host -NoNewline $line -ForegroundColor DarkCyan
+                }
+                else {
+                    $currMb = ($downloadedBytes / 1MB).ToString("0.0")
+                    $line = "`r       Загружено: $currMb MB  "
+                    Write-Host -NoNewline $line -ForegroundColor DarkCyan
+                }
+            }
+        }
+    }
+    finally {
+        $fileStream.Close()
+        $responseStream.Close()
+        $response.Close()
+    }
+
+    if ($isInteractive) {
+        Write-Host "`r                                                                      `r" -NoNewline
+    }
+}
+
+function Get-Utf8WebString([string]$Url) {
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.UserAgent = "BUTION-Installer"
+    $request.Timeout = 15000
+    $request.AllowAutoRedirect = $true
+
+    $response = $request.GetResponse()
+    $stream = $response.GetResponseStream()
+    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+    $text = $reader.ReadToEnd()
+    $reader.Close()
+    $stream.Close()
+    $response.Close()
+    return $text.TrimStart([char]0xFEFF).Trim()
 }
 
 function ConvertTo-Utf8Text([object]$Content) {
@@ -40,9 +146,11 @@ function ConvertTo-Utf8Text([object]$Content) {
     return ([string]$Content).TrimStart([char]0xFEFF).Trim()
 }
 
+Show-Banner
+
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -notin @("AMD64", "x86_64")) {
-    throw "Этот установщик пока поддерживает Windows x64."
+    Write-Fail "Этот установщик пока поддерживает Windows x64."
 }
 
 $Repo = "danytebyya/bution"
@@ -54,29 +162,31 @@ $TemporaryDir = Join-Path ([IO.Path]::GetTempPath()) ("bution-" + [guid]::NewGui
 New-Item -ItemType Directory -Force -Path $BinDir, $LlamaDir, $TemporaryDir | Out-Null
 
 try {
+    # 1/4: BUTION
+    Write-StepHeader "1/4" "Загрузка BUTION…"
     $ButionBinary = Join-Path $BinDir "bution-real.exe"
     $ButionReady = (Test-Path $ButionBinary) -and ((Get-Item $ButionBinary).Length -gt 0)
     if ((-not $ForceUpdate) -and $ButionReady) {
-        Write-Step "BUTION уже установлен — пропускаю загрузку."
+        Write-Success "BUTION уже установлен ($ButionBinary)"
     }
     else {
-        Write-Step "загружаю BUTION…"
         $ButionArchive = Join-Path $TemporaryDir "bution.zip"
         $ButionExtract = Join-Path $TemporaryDir "bution-extract"
         $ButionUrl = "https://github.com/$Repo/releases/latest/download/bution-windows-x64.zip"
         $ButionReady = $false
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri $ButionUrl -OutFile $ButionArchive
+            Download-FileWithProgress $ButionUrl $ButionArchive
             Expand-Archive -Force -Path $ButionArchive -DestinationPath $ButionExtract
             $ButionExe = Get-ChildItem -Path $ButionExtract -Recurse -File -Filter "bution.exe" |
                 Select-Object -First 1
             if ($ButionExe) {
                 Copy-Item -Force $ButionExe.FullName $ButionBinary
                 $ButionReady = $true
+                Write-Success "BUTION успешно загружен и установлен"
             }
         }
         catch {
-            Write-Step "готовый релиз недоступен — выполняю автоматическую сборку…"
+            Write-Info "Готовый релиз недоступен — выполняю автоматическую сборку…"
         }
 
         if (-not $ButionReady) {
@@ -91,19 +201,20 @@ try {
             }
 
             if ($CppToolsReady) {
-                Write-Step "Microsoft C++ Build Tools уже установлены."
+                Write-Success "Microsoft C++ Build Tools уже установлены"
             }
             else {
                 if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-                    throw "Для автоматической установки нужен winget (Microsoft App Installer)."
+                    Write-Fail "Для автоматической сборки нужен winget (Microsoft App Installer)."
                 }
-                Write-Step "устанавливаю Microsoft C++ Build Tools (может занять 10–30 минут)…"
+                Write-Info "Устанавливаю Microsoft C++ Build Tools (может занять 10–30 минут)…"
                 & winget.exe install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent `
                     --accept-source-agreements --accept-package-agreements --disable-interactivity `
                     --override "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
                 if ($LASTEXITCODE -ne 0) {
-                    throw "Не удалось автоматически установить Microsoft C++ Build Tools."
+                    Write-Fail "Не удалось автоматически установить Microsoft C++ Build Tools."
                 }
+                Write-Success "Microsoft C++ Build Tools успешно установлены"
             }
 
             $CargoCommand = Get-Command cargo.exe -ErrorAction SilentlyContinue
@@ -117,90 +228,106 @@ try {
                 Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
             }
             if (Test-Path $Cargo) {
-                Write-Step "Rust уже установлен."
+                Write-Success "Rust уже установлен"
             }
             else {
-                Write-Step "устанавливаю Rust…"
+                Write-Info "Устанавливаю Rust…"
                 $Rustup = Join-Path $TemporaryDir "rustup-init.exe"
-                Invoke-WebRequest -UseBasicParsing `
-                    -Uri "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe" `
-                    -OutFile $Rustup
+                Download-FileWithProgress "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe" $Rustup
                 & $Rustup -y --profile minimal --default-toolchain stable
                 if ($LASTEXITCODE -ne 0) {
-                    throw "Не удалось автоматически установить Rust."
+                    Write-Fail "Не удалось автоматически установить Rust."
                 }
+                Write-Success "Rust успешно установлен"
             }
             $CargoDir = Split-Path $Cargo
             if ($CargoDir) {
                 $env:Path = "$CargoDir;$env:Path"
             }
 
-            Write-Step "скачиваю исходники и собираю BUTION…"
+            Write-Info "Скачиваю исходники BUTION…"
             $SourceArchive = Join-Path $TemporaryDir "source.zip"
             $SourceExtract = Join-Path $TemporaryDir "source"
-            Invoke-WebRequest -UseBasicParsing `
-                -Uri "https://github.com/$Repo/archive/refs/heads/main.zip" `
-                -OutFile $SourceArchive
+            Download-FileWithProgress "https://github.com/$Repo/archive/refs/heads/main.zip" $SourceArchive
             Expand-Archive -Force -Path $SourceArchive -DestinationPath $SourceExtract
             $Manifest = Get-ChildItem -Path $SourceExtract -Recurse -File -Filter "Cargo.toml" |
                 Sort-Object { $_.FullName.Length } |
                 Select-Object -First 1
             if (-not $Manifest) {
-                throw "В архиве BUTION отсутствует Cargo.toml."
+                Write-Fail "В архиве BUTION отсутствует Cargo.toml."
             }
+            Write-Info "Компиляция BUTION (release)…"
             & $Cargo build --release --locked --manifest-path $Manifest.FullName
             if ($LASTEXITCODE -ne 0) {
-                throw "Автоматическая сборка BUTION завершилась ошибкой."
+                Write-Fail "Автоматическая сборка BUTION завершилась ошибкой."
             }
             $BuiltBinary = Join-Path $Manifest.Directory.FullName "target\release\bution.exe"
             Copy-Item -Force $BuiltBinary $ButionBinary
+            Write-Success "BUTION успешно собран из исходников"
         }
     }
 
+    Write-Host ""
+
+    # 2/4: llama.cpp
+    Write-StepHeader "2/4" "Загрузка llama.cpp с RPC…"
     $LlamaReady = (Test-Path (Join-Path $LlamaDir "llama-server.exe")) -and
         (Test-Path (Join-Path $LlamaDir "llama-bench.exe")) -and
         ((Test-Path (Join-Path $LlamaDir "rpc-server.exe")) -or
          (Test-Path (Join-Path $LlamaDir "ggml-rpc-server.exe")))
     if ((-not $ForceUpdate) -and $LlamaReady) {
-        Write-Step "llama.cpp с RPC уже установлен — пропускаю загрузку."
+        $VersionFile = Join-Path $LlamaDir ".version"
+        $InstalledVer = if (Test-Path $VersionFile) { "сборка " + (Get-Content $VersionFile).Trim() } else { "актуальная версия" }
+        Write-Success "llama.cpp с RPC уже установлен ($InstalledVer)"
     }
     else {
-        Write-Step "загружаю официальный llama.cpp с RPC…"
         $LlamaTagUrl = "https://github.com/ggml-org/llama.cpp/releases/download/v0.3.0/nightly-tag.txt"
-        $LlamaTagResponse = Invoke-WebRequest -UseBasicParsing -Uri $LlamaTagUrl
-        $LlamaTag = ConvertTo-Utf8Text $LlamaTagResponse.Content
-        if ($LlamaTag -notmatch "^b[0-9]+$") {
-            throw "Не удалось определить актуальную сборку llama.cpp: '$LlamaTag'."
+        $LlamaTag = try {
+            Get-Utf8WebString $LlamaTagUrl
         }
+        catch {
+            $LlamaTagResp = Invoke-WebRequest -UseBasicParsing -Uri $LlamaTagUrl
+            ConvertTo-Utf8Text $LlamaTagResp.Content
+        }
+        if ($LlamaTag -notmatch "^b[0-9]+$") {
+            Write-Fail "Не удалось определить актуальную сборку llama.cpp: '$LlamaTag'."
+        }
+        Write-Info "Актуальная сборка llama.cpp: $LlamaTag"
         $LlamaAsset = "llama-$LlamaTag-bin-win-cpu-x64.zip"
         $LlamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaTag/$LlamaAsset"
         $LlamaArchive = Join-Path $TemporaryDir "llama.zip"
         $LlamaExtract = Join-Path $TemporaryDir "llama"
-        Invoke-WebRequest -UseBasicParsing -Uri $LlamaUrl -OutFile $LlamaArchive
+        Download-FileWithProgress $LlamaUrl $LlamaArchive
         Expand-Archive -Force -Path $LlamaArchive -DestinationPath $LlamaExtract
         $LlamaServer = Get-ChildItem -Path $LlamaExtract -Recurse -File -Filter "llama-server.exe" |
             Select-Object -First 1
         if (-not $LlamaServer) {
-            throw "В архиве llama.cpp отсутствует llama-server.exe."
+            Write-Fail "В архиве llama.cpp отсутствует llama-server.exe."
         }
         Get-ChildItem -Force $LlamaDir | Remove-Item -Recurse -Force
         Copy-Item -Recurse -Force (Join-Path $LlamaServer.Directory.FullName "*") $LlamaDir
         if (-not (Test-Path (Join-Path $LlamaDir "llama-bench.exe"))) {
-            throw "В архиве llama.cpp отсутствует llama-bench.exe."
+            Write-Fail "В архиве llama.cpp отсутствует llama-bench.exe."
         }
         if (-not ((Test-Path (Join-Path $LlamaDir "rpc-server.exe")) -or
                   (Test-Path (Join-Path $LlamaDir "ggml-rpc-server.exe")))) {
-            throw "В архиве llama.cpp отсутствует RPC server."
+            Write-Fail "В архиве llama.cpp отсутствует RPC server."
         }
         Set-Content -Encoding ASCII -Path (Join-Path $LlamaDir ".version") -Value $LlamaTag
+        Write-Success "llama.cpp с RPC успешно установлен (сборка $LlamaTag)"
     }
 
+    Write-Host ""
+
+    # 3/4: Launcher & PATH
+    Write-StepHeader "3/4" "Настройка лаунчера и переменной окружения PATH…"
     $Launcher = Join-Path $BinDir "bution.cmd"
     $LauncherLines = @(
         "@echo off",
         "`"$BinDir\bution-real.exe`" --llama-bin-dir `"$LlamaDir`" %*"
     )
     Set-Content -Encoding ASCII -Path $Launcher -Value $LauncherLines
+    Write-Success "Лаунчер bution.cmd настроен"
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $CurrentPaths = if ($UserPath) { $UserPath -split ";" } else { @() }
@@ -209,7 +336,12 @@ try {
         [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
     }
     $env:Path = "$BinDir;$env:Path"
+    Write-Success "Команда bution добавлена в PATH"
 
+    Write-Host ""
+
+    # 4/4: Windows Firewall
+    Write-StepHeader "4/4" "Настройка Windows Firewall для частной сети…"
     $FirewallReady = $false
     try {
         $TcpRule = Get-NetFirewallRule -DisplayName "BUTION TCP" -ErrorAction Stop
@@ -221,10 +353,10 @@ try {
     }
 
     if ($FirewallReady) {
-        Write-Step "правила Windows Firewall уже настроены."
+        Write-Success "Правила Windows Firewall уже настроены"
     }
     else {
-        Write-Step "настраиваю Windows Firewall для частной сети…"
+        Write-Info "Запрос прав администратора для настройки Firewall…"
         $FirewallScript = @'
 $ErrorActionPreference = "Stop"
 $tcp = Get-NetFirewallRule -DisplayName "BUTION TCP" -ErrorAction SilentlyContinue
@@ -240,17 +372,21 @@ if (-not $udp) {
         $FirewallProcess = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
             -ArgumentList "-NoProfile", "-EncodedCommand", $Encoded
         if ($FirewallProcess.ExitCode -ne 0) {
-            throw "Не удалось настроить Windows Firewall."
+            Write-Fail "Не удалось настроить Windows Firewall."
         }
+        Write-Success "Правила Windows Firewall для TCP (31750, 31751, 50052) и UDP (5353) созданы"
     }
 
     Write-Host ""
-    Write-Host "Установка завершена." -ForegroundColor Green
-    Write-Host "Запустить сейчас:"
-    Write-Host "  $Launcher"
+    Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host " ✨ Установка успешно завершена!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "В новом PowerShell можно использовать просто:"
-    Write-Host "  bution"
+    Write-Host " Запустить прямо сейчас:" -ForegroundColor White
+    Write-Host "   $Launcher" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host " В новом окне PowerShell можно использовать просто:" -ForegroundColor White
+    Write-Host "   bution" -ForegroundColor Yellow
+    Write-Host ""
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TemporaryDir

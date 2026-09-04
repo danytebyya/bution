@@ -1,5 +1,9 @@
 //! Long-lived Ed25519 node identity and pairing verification.
 
+mod noise;
+
+pub use noise::{NoiseChannel, NoiseIdentity};
+
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -93,14 +97,14 @@ pub fn validate_distinct_identity(local_id: Uuid, remote_id: Uuid) -> Result<()>
 }
 
 #[cfg(unix)]
-fn restrict_key_permissions(path: &Path) -> Result<()> {
+pub(super) fn restrict_key_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .context("could not restrict identity key permissions")
 }
 
 #[cfg(not(unix))]
-fn restrict_key_permissions(_path: &Path) -> Result<()> {
+pub(super) fn restrict_key_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 

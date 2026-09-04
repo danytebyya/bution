@@ -500,6 +500,7 @@ fn allowed_rpc_bind(address: IpAddr, available: &[NetworkInterface]) -> bool {
 mod tests {
     use super::*;
     use crate::network::InterfaceKind;
+    use uuid::Uuid;
 
     #[test]
     fn refuses_vpn_and_unknown_rpc_bind_addresses() {
@@ -519,5 +520,60 @@ mod tests {
             "192.168.1.19".parse().unwrap(),
             &interfaces
         ));
+    }
+
+    #[tokio::test]
+    async fn pairs_over_noise_and_persists_trust() {
+        let directory = std::env::temp_dir().join(format!("bution-control-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let paths = AppPaths {
+            data_dir: directory.clone(),
+            settings_file: directory.join("settings.toml"),
+            identity_file: directory.join("identity.key"),
+            noise_identity_file: directory.join("noise-identity.key"),
+            cache_dir: directory.join("cache"),
+        };
+        let server_settings = Arc::new(Mutex::new(Settings {
+            node_name: "Server Node".into(),
+            ..Settings::default()
+        }));
+        let server_identity = NoiseIdentity::load_or_create(&paths.noise_identity_file).unwrap();
+        let mut server = ControlServer::start(
+            "127.0.0.1:0".parse().unwrap(),
+            server_settings.clone(),
+            paths.clone(),
+            server_identity,
+            None,
+            HardwareProfile::detect(),
+        )
+        .await
+        .unwrap();
+        let client_path = directory.join("client-noise.key");
+        let client_identity = NoiseIdentity::load_or_create(&client_path).unwrap();
+        let client_settings = Settings {
+            node_name: "Client Node".into(),
+            ..Settings::default()
+        };
+        let address = server.local_addr();
+        let client_task = tokio::spawn(async move {
+            ControlClient::pair(address, &client_identity, &client_settings).await
+        });
+        let event = server.next_event().await.unwrap();
+        match event {
+            ControlEvent::PairingRequested {
+                request, response, ..
+            } => {
+                assert_eq!(request.node_name, "Client Node");
+                response.send(PairDecision::Accept).unwrap();
+            }
+            _ => panic!("expected pairing request"),
+        }
+        let mut client = client_task.await.unwrap().unwrap();
+        let info = client.node_info().await.unwrap();
+        assert_eq!(info.name, "Server Node");
+        assert_eq!(server_settings.lock().await.trusted_peers.len(), 1);
+        drop(client);
+        server.stop().await;
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

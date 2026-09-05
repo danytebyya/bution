@@ -109,7 +109,7 @@ pub fn target_asset_name() -> &'static str {
 pub async fn run_cli_update() -> Result<()> {
     println!("\x1b[1;34m[1/2]\x1b[0m \x1b[1;37mПроверка наличия обновлений BUTION…\x1b[0m");
     let repo = "danytebyya/bution";
-    match check_latest_release(repo, 5).await {
+    match check_latest_release(repo, 6).await {
         Some(info) => {
             println!(
                 "       \x1b[1;32m✔\x1b[0m \x1b[37mНайдена новая версия: \x1b[38;2;59;130;246m{}\x1b[0m (текущая: v{})\x1b[0m",
@@ -152,7 +152,7 @@ pub async fn run_cli_update() -> Result<()> {
         }
         None => {
             let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(5))
                 .user_agent("bution-updater")
                 .build()?;
             let online = client.get("https://api.github.com").send().await.is_ok();
@@ -169,6 +169,84 @@ pub async fn run_cli_update() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Automatically check and perform update on startup if online and a newer release exists.
+/// Returns Ok(true) if updated and re-executed, or Ok(false) if no update needed / offline.
+pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
+    let repo = "danytebyya/bution";
+    // 5-second timeout ensures reliable check even over slower network connections
+    let Some(info) = check_latest_release(repo, 5).await else {
+        return Ok(false);
+    };
+
+    println!(
+        "\x1b[38;2;59;130;246m⚡ Найдена новая версия BUTION: \x1b[1;37m{}\x1b[0m (текущая: v{})\x1b[0m",
+        info.latest_version, info.current_version
+    );
+    println!("🔄 Автоматическое обновление до актуальной версии…\n");
+
+    let update_success = {
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "$env:BUTION_FORCE_UPDATE='1'; irm https://raw.githubusercontent.com/danytebyya/bution/main/install.ps1 | iex",
+                ])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("bash")
+                .arg("-c")
+                .arg("curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash")
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    };
+
+    if !update_success {
+        println!(
+            "\x1b[1;33m⚠ Не удалось загрузить обновление, продолжаю запуск текущей версии…\x1b[0m\n"
+        );
+        return Ok(false);
+    }
+
+    println!(
+        "\n\x1b[1;32m✔\x1b[0m \x1b[1;37mBUTION успешно обновлён до {}! Запуск…\x1b[0m\n",
+        info.latest_version
+    );
+
+    // Collect original arguments, ensure --no-update-check is present to avoid loop
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.iter().any(|a| a == "--no-update-check") {
+        args.push("--no-update-check".to_string());
+    }
+
+    let exe = std::env::current_exe()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(exe).args(args).exec();
+        eprintln!("Failed to re-execute updated binary: {err}");
+        std::process::exit(1);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut child = std::process::Command::new(exe).args(args).spawn()?;
+        let status = child.wait()?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
 }
 
 #[cfg(test)]

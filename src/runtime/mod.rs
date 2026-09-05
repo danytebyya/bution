@@ -97,10 +97,10 @@ impl RuntimeHandle {
         let (events_sender, events) = mpsc::channel(128);
         let (commands, command_receiver) = mpsc::channel(16);
 
-        // Non-blocking background check for updates (skipped instantly if offline)
+        // Non-blocking background check for updates (runs concurrently in background)
         let update_sender = events_sender.clone();
         tokio::spawn(async move {
-            if let Some(info) = crate::update::check_latest_release("danytebyya/bution", 2).await {
+            if let Some(info) = crate::update::check_latest_release("danytebyya/bution", 8).await {
                 let _ = update_sender
                     .send(RuntimeEvent::UpdateAvailable {
                         latest_version: info.latest_version.clone(),

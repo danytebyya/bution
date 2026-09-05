@@ -27,6 +27,10 @@ struct Cli {
     /// Check for updates and update BUTION to the latest version.
     #[arg(long, short = 'u')]
     update: bool,
+
+    /// Skip checking for updates on startup.
+    #[arg(long)]
+    no_update_check: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -51,6 +55,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.update {
         return bution::update::run_cli_update().await;
+    }
+    if !cli.no_update_check && bution::update::auto_update_on_startup_if_needed().await? {
+        return Ok(());
     }
     let mut app = App::load()?;
     let mut settings_changed = false;

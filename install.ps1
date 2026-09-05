@@ -77,10 +77,10 @@ function Download-FileWithProgress([string]$Url, [string]$Destination) {
                         $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
                         $filled = [int](($percent / 100) * $barWidth)
                         $empty = $barWidth - $filled
-                        $bar = ("█" * $filled) + ("░" * $empty)
+                        $bar = ("█" * $filled) + (" " * $empty)
                         $currMb = ($downloadedBytes / 1MB).ToString("0.0")
                         $totalMb = ($totalBytes / 1MB).ToString("0.0")
-                        $line = "`r       [$bar] $percent% ($currMb / $totalMb MB)  "
+                        $line = "`r       |$bar| $percent% ($currMb / $totalMb MB)  "
                         Write-Host -NoNewline $line -ForegroundColor Blue
                     }
                     else {

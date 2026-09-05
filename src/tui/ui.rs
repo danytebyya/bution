@@ -406,11 +406,16 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
         } else {
             download.downloaded_bytes as f64 * 100.0 / download.total_bytes as f64
         };
+        let bar_width: usize = 20;
+        let filled = ((percent / 100.0) * bar_width as f64).round() as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!("|{}{}|", "█".repeat(filled), " ".repeat(empty));
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             format!(
-                "{}: {:.1}%  {:.1}/{:.1} GiB  {:.1} MiB/s",
+                "{}: {} {:.1}%  {:.1}/{:.1} GiB  {:.1} MiB/s",
                 download.filename,
+                bar,
                 percent,
                 bytes_to_gib(download.downloaded_bytes),
                 bytes_to_gib(download.total_bytes),

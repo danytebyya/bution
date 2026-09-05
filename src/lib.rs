@@ -6,6 +6,7 @@ pub mod cluster;
 pub mod control;
 pub mod discovery;
 pub mod hardware;
+pub mod hub;
 pub mod llama;
 pub mod locale;
 pub mod models;

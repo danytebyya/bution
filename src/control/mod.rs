@@ -529,6 +529,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let paths = AppPaths {
             data_dir: directory.clone(),
+            models_dir: directory.join("models"),
             settings_file: directory.join("settings.toml"),
             identity_file: directory.join("identity.key"),
             noise_identity_file: directory.join("noise-identity.key"),

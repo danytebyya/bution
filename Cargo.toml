@@ -17,6 +17,7 @@ crossterm = "0.28"
 directories = "6.0"
 ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
 futures-util = "0.3"
+fs2 = "0.4"
 hostname = "0.4"
 if-addrs = "0.13"
 mdns-sd = "0.13"

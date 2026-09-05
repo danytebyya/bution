@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub data_dir: PathBuf,
+    pub models_dir: PathBuf,
     pub settings_file: PathBuf,
     pub identity_file: PathBuf,
     pub noise_identity_file: PathBuf,
@@ -24,6 +25,7 @@ impl AppPaths {
             .context("could not determine the application data directory")?;
         let data_dir = project.data_local_dir().to_path_buf();
         Ok(Self {
+            models_dir: data_dir.join("models"),
             settings_file: data_dir.join("settings.toml"),
             identity_file: data_dir.join("identity.key"),
             noise_identity_file: data_dir.join("noise-identity.key"),
@@ -35,6 +37,7 @@ impl AppPaths {
     #[cfg(test)]
     fn for_test(data_dir: PathBuf) -> Self {
         Self {
+            models_dir: data_dir.join("models"),
             settings_file: data_dir.join("settings.toml"),
             identity_file: data_dir.join("identity.key"),
             noise_identity_file: data_dir.join("noise-identity.key"),
@@ -47,6 +50,7 @@ impl AppPaths {
         fs::create_dir_all(&self.data_dir)
             .context("could not create application data directory")?;
         fs::create_dir_all(&self.cache_dir).context("could not create cache directory")?;
+        fs::create_dir_all(&self.models_dir).context("could not create models directory")?;
         Ok(())
     }
 }

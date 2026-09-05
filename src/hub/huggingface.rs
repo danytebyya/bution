@@ -32,29 +32,36 @@ pub struct HuggingFaceClient {
     endpoint: Url,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct ApiModel {
-    id: String,
     #[serde(default)]
-    downloads: u64,
+    id: Option<String>,
+    #[serde(default, rename = "_id")]
+    underscore_id: Option<String>,
     #[serde(default)]
-    likes: u64,
+    downloads: Option<u64>,
     #[serde(default)]
-    sha: String,
+    likes: Option<u64>,
+    #[serde(default)]
+    sha: Option<String>,
     #[serde(default)]
     siblings: Vec<ApiSibling>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct ApiSibling {
+    #[serde(default)]
     rfilename: String,
+    #[serde(default)]
     size: Option<u64>,
+    #[serde(default)]
     lfs: Option<ApiLfs>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct ApiLfs {
-    size: u64,
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 impl HuggingFaceClient {
@@ -103,16 +110,20 @@ impl HuggingFaceClient {
             .context("invalid Hugging Face search response")?;
         Ok(models
             .into_iter()
-            .filter(|model| {
-                model
+            .filter_map(|model| {
+                let id = model.id.or(model.underscore_id)?;
+                let has_gguf = model
                     .siblings
                     .iter()
-                    .any(|file| file.rfilename.to_ascii_lowercase().ends_with(".gguf"))
-            })
-            .map(|model| HubRepository {
-                id: model.id,
-                downloads: model.downloads,
-                likes: model.likes,
+                    .any(|file| file.rfilename.to_ascii_lowercase().ends_with(".gguf"));
+                if !has_gguf {
+                    return None;
+                }
+                Some(HubRepository {
+                    id,
+                    downloads: model.downloads.unwrap_or(0),
+                    likes: model.likes.unwrap_or(0),
+                })
             })
             .collect())
     }
@@ -159,17 +170,16 @@ impl HuggingFaceClient {
             .json()
             .await
             .context("invalid Hugging Face repository response")?;
-        let revision = if model.sha.is_empty() {
-            "main".to_owned()
-        } else {
-            model.sha
-        };
+        let revision = model.sha.unwrap_or_else(|| "main".to_owned());
         let mut files = model
             .siblings
             .into_iter()
             .filter_map(|file| {
+                if file.rfilename.is_empty() {
+                    return None;
+                }
                 let quantization = primary_quantization(&file.rfilename)?;
-                let size_bytes = file.size.or_else(|| file.lfs.map(|lfs| lfs.size))?;
+                let size_bytes = file.size.or_else(|| file.lfs.and_then(|lfs| lfs.size))?;
                 (size_bytes > 0).then(|| HubFile {
                     repository: repository.to_owned(),
                     revision: revision.clone(),

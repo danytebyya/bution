@@ -260,7 +260,7 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         Line::raw(""),
     ];
-    match app.models.pane {
+    let (item_top, item_bottom) = match app.models.pane {
         ModelsPane::Search => {
             lines.push(Line::styled(
                 format!("> {}_", app.models.search_input),
@@ -295,6 +295,7 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ),
                 Style::default().fg(MUTED),
             ));
+            (0, 0)
         }
         ModelsPane::Repositories => {
             lines.push(Line::styled(
@@ -312,15 +313,23 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     "Репозитории GGUF не найдены.",
                 )));
             }
+            let mut top = 0;
+            let mut bottom = 0;
             for (index, repository) in app.models.repositories.iter().enumerate() {
+                let is_selected = index == app.models.repository_index;
+                if is_selected {
+                    top = lines.len();
+                    bottom = lines.len();
+                }
                 lines.push(selectable_line(
-                    index == app.models.repository_index,
+                    is_selected,
                     format!(
                         "{}  ↓{}  ♥{}",
                         repository.id, repository.downloads, repository.likes
                     ),
                 ));
             }
+            (top, bottom)
         }
         ModelsPane::Files => {
             lines.push(Line::styled(
@@ -328,9 +337,16 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             ));
             lines.push(Line::raw(""));
+            let mut top = 0;
+            let mut bottom = 0;
             for (index, ranked) in app.models.files.iter().enumerate() {
+                let is_selected = index == app.models.file_index;
+                if is_selected {
+                    top = lines.len();
+                    bottom = lines.len();
+                }
                 lines.push(selectable_line(
-                    index == app.models.file_index,
+                    is_selected,
                     format!(
                         "{:<11} {:>7.1} GiB   {}",
                         ranked.file.quantization.label(),
@@ -339,6 +355,7 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     ),
                 ));
             }
+            (top, bottom)
         }
         ModelsPane::Installed => {
             lines.push(Line::styled(
@@ -351,6 +368,8 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     l.text("No downloaded models yet.", "Скачанных моделей пока нет."),
                 ));
             }
+            let mut top = 0;
+            let mut bottom = 0;
             for (index, model) in app.models.installed.iter().enumerate() {
                 let quant = crate::hub::quantization::Quantization::parse(
                     model
@@ -365,8 +384,12 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .model
                     .as_ref()
                     .is_some_and(|current| current.path == model.path);
+                let is_selected = index == app.models.installed_index;
+                if is_selected {
+                    top = lines.len();
+                }
                 lines.push(selectable_line(
-                    index == app.models.installed_index,
+                    is_selected,
                     format!(
                         "{}{}",
                         model.name,
@@ -383,10 +406,14 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     quant,
                     app.installed_rating(model).label()
                 )));
+                if is_selected {
+                    bottom = lines.len() - 1;
+                }
                 lines.push(Line::raw(""));
             }
+            (top, bottom)
         }
-    }
+    };
     if let Some(download) = &app.models.download {
         let percent = if download.total_bytes == 0 {
             0.0
@@ -418,17 +445,13 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(Color::Yellow),
         ));
     }
-    let selected_line = match app.models.pane {
-        ModelsPane::Repositories => 4 + app.models.repository_index,
-        ModelsPane::Files => 4 + app.models.file_index,
-        ModelsPane::Installed => 4 + app.models.installed_index * 3,
-        ModelsPane::Search => 0,
-    };
     let visible_height = area.height.saturating_sub(2) as usize;
-    let scroll = if app.models.download.is_some() || app.models.status.is_some() {
-        lines.len().saturating_sub(visible_height)
+    let scroll = if item_bottom > 0 && visible_height > 0 {
+        let min_scroll = (item_bottom + 1).saturating_sub(visible_height.saturating_sub(1));
+        let max_scroll = item_top.saturating_sub(2);
+        min_scroll.min(max_scroll)
     } else {
-        selected_line.saturating_sub(visible_height.saturating_sub(1))
+        0
     };
     frame.render_widget(
         Paragraph::new(lines)
@@ -849,6 +872,30 @@ mod tests {
             detail: "test".into(),
         });
         assert!(render(&app, 80, 24).contains("The model could not be started"));
+    }
+
+    #[test]
+    fn selected_model_is_always_visible_when_scrolling() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen_index = 2;
+        app.models.pane = crate::tui::app::ModelsPane::Installed;
+        for i in 0..20 {
+            app.models.installed.push(crate::models::ModelInfo {
+                name: format!("model-{i}.gguf"),
+                path: format!("/tmp/model-{i}.gguf").into(),
+                file_size_bytes: 4 * 1024 * 1024 * 1024,
+                gguf_version: 3,
+                estimated_memory_bytes: 4 * 1024 * 1024 * 1024,
+            });
+        }
+        for index in [0, 5, 10, 15, 19] {
+            app.models.installed_index = index;
+            let rendered = render(&app, 80, 24);
+            assert!(
+                rendered.contains(&format!("> model-{index}.gguf")),
+                "selected model {index} must be visible in rendered output:\n{rendered}"
+            );
+        }
     }
 
     #[test]

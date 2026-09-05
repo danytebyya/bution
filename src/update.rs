@@ -12,17 +12,21 @@ pub struct UpdateInfo {
     pub download_url: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct GitHubRelease {
+    #[serde(default)]
     tag_name: String,
+    #[serde(default)]
     html_url: String,
     #[serde(default)]
     assets: Vec<GitHubAsset>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct GitHubAsset {
+    #[serde(default)]
     name: String,
+    #[serde(default)]
     browser_download_url: String,
 }
 
@@ -108,9 +112,11 @@ pub fn target_asset_name() -> &'static str {
 
 /// Download release asset from URL and extract the bution binary bytes natively.
 pub async fn download_binary_bytes(download_url: &str) -> Result<Vec<u8>> {
-    use std::io::{Cursor, Read};
+    use futures_util::StreamExt;
+    use std::io::{Cursor, Read, Write};
+
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(120))
         .user_agent("bution-updater")
         .build()?;
     let response = client.get(download_url).send().await?;
@@ -120,14 +126,60 @@ pub async fn download_binary_bytes(download_url: &str) -> Result<Vec<u8>> {
             response.status()
         );
     }
-    let bytes = response.bytes().await?;
+    let total_size = response.content_length().unwrap_or(0);
+    let mut stream = response.bytes_stream();
+    let mut raw_bytes = Vec::new();
+    let mut downloaded: u64 = 0;
+    let start_time = std::time::Instant::now();
+    let mut last_print = std::time::Instant::now() - Duration::from_millis(500);
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res?;
+        raw_bytes.extend_from_slice(&chunk);
+        downloaded += chunk.len() as u64;
+
+        if last_print.elapsed() >= Duration::from_millis(100)
+            || (total_size > 0 && downloaded == total_size)
+        {
+            last_print = std::time::Instant::now();
+            let elapsed_secs = start_time.elapsed().as_secs_f64();
+            let speed_mb = if elapsed_secs > 0.0 {
+                (downloaded as f64 / (1024.0 * 1024.0)) / elapsed_secs
+            } else {
+                0.0
+            };
+
+            if total_size > 0 {
+                let percent = (downloaded as f64 * 100.0 / total_size as f64).clamp(0.0, 100.0);
+                let bar_width: usize = 20;
+                let filled = ((percent / 100.0) * bar_width as f64).round() as usize;
+                let empty = bar_width.saturating_sub(filled);
+                let bar = format!("|{}{}|", "█".repeat(filled), " ".repeat(empty));
+                let down_mb = downloaded as f64 / (1024.0 * 1024.0);
+                let total_mb = total_size as f64 / (1024.0 * 1024.0);
+                print!(
+                    "\r   {} {:>5.1}%  ({:.1}/{:.1} MB)  {:.1} MB/s",
+                    bar, percent, down_mb, total_mb, speed_mb
+                );
+            } else {
+                let down_mb = downloaded as f64 / (1024.0 * 1024.0);
+                print!("\r   {:.1} MB downloaded  {:.1} MB/s", down_mb, speed_mb);
+            }
+            let _ = std::io::stdout().flush();
+        }
+    }
+    println!();
+
+    let bytes = raw_bytes;
 
     if download_url.ends_with(".zip") {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
-            if name.ends_with("bution.exe") || name.ends_with("bution-real.exe") || name == "bution"
+            if name.ends_with("bution.exe")
+                || name.ends_with("bution-real.exe")
+                || name == "bution"
             {
                 let mut buffer = Vec::new();
                 file.read_to_end(&mut buffer)?;
@@ -149,7 +201,7 @@ pub async fn download_binary_bytes(download_url: &str) -> Result<Vec<u8>> {
         }
         anyhow::bail!("No bution executable found inside the tar archive");
     } else {
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 }
 

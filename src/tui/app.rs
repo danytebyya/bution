@@ -39,11 +39,39 @@ pub enum ModelsPane {
     Installed,
 }
 
+pub const POPULAR_MODELS: &[&str] = &[
+    "Qwen/Qwen2.5-7B-Instruct-GGUF",
+    "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+    "Qwen/Qwen2.5-14B-Instruct-GGUF",
+    "Qwen/Qwen2.5-32B-Instruct-GGUF",
+    "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
+    "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-8B-GGUF",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B-GGUF",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-GGUF",
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B-GGUF",
+    "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+    "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF",
+    "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "bartowski/Llama-3.2-1B-Instruct-GGUF",
+    "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
+    "bartowski/Mistral-Small-24B-Instruct-2501-GGUF",
+    "bartowski/gemma-2-9b-it-GGUF",
+    "bartowski/gemma-2-27b-it-GGUF",
+    "bartowski/Phi-3.5-mini-instruct-GGUF",
+    "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+    "bartowski/Hermes-3-Llama-3.1-8B-GGUF",
+    "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+    "nomic-ai/nomic-embed-text-v1.5-GGUF",
+];
+
 pub struct ModelsState {
     pub pane: ModelsPane,
     pub search_input: String,
     pub active_query: String,
     pub searching: bool,
+    pub suggestion_index: usize,
     pub repositories: Vec<HubRepository>,
     pub repository_index: usize,
     pub open_repository: Option<String>,
@@ -172,6 +200,7 @@ impl App {
                 search_input: String::new(),
                 active_query: String::new(),
                 searching: false,
+                suggestion_index: 0,
                 repositories: Vec::new(),
                 repository_index: 0,
                 open_repository: None,
@@ -475,7 +504,13 @@ impl App {
                     ModelsPane::Files | ModelsPane::Installed => ModelsPane::Repositories,
                     ModelsPane::Repositories => ModelsPane::Search,
                     ModelsPane::Search => {
-                        self.screen_index = 0;
+                        if self.models.suggestion_index > 0 {
+                            self.models.suggestion_index = 0;
+                        } else if !self.models.search_input.is_empty() {
+                            self.models.search_input.clear();
+                        } else {
+                            self.screen_index = 0;
+                        }
                         ModelsPane::Search
                     }
                 };
@@ -484,7 +519,17 @@ impl App {
             KeyCode::Down => self.move_model_selection(1),
             KeyCode::Enter => match self.models.pane {
                 ModelsPane::Search => {
-                    let query = self.models.search_input.trim().to_owned();
+                    let suggestions = self.matching_model_suggestions();
+                    let query = if self.models.suggestion_index > 0
+                        && self.models.suggestion_index <= suggestions.len()
+                    {
+                        let selected = suggestions[self.models.suggestion_index - 1];
+                        self.models.search_input = selected.to_owned();
+                        self.models.suggestion_index = 0;
+                        selected.to_owned()
+                    } else {
+                        self.models.search_input.trim().to_owned()
+                    };
                     if !query.is_empty() {
                         self.models.searching = true;
                         self.models.status = None;
@@ -602,6 +647,7 @@ impl App {
             }
             KeyCode::Backspace if self.models.pane == ModelsPane::Search => {
                 self.models.search_input.pop();
+                self.models.suggestion_index = 0;
             }
             KeyCode::Char(character)
                 if self.models.pane == ModelsPane::Search
@@ -610,13 +656,46 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.models.search_input.push(character);
+                self.models.suggestion_index = 0;
             }
             _ => {}
         }
         AppAction::None
     }
 
+    pub fn matching_model_suggestions(&self) -> Vec<&'static str> {
+        let input = self.models.search_input.trim().to_lowercase();
+        if input.is_empty() {
+            POPULAR_MODELS.iter().take(6).copied().collect()
+        } else {
+            let terms: Vec<&str> = input.split_whitespace().collect();
+            POPULAR_MODELS
+                .iter()
+                .filter(|model| {
+                    let lower = model.to_lowercase();
+                    terms.iter().all(|term| lower.contains(term))
+                })
+                .take(6)
+                .copied()
+                .collect()
+        }
+    }
+
     fn move_model_selection(&mut self, delta: isize) {
+        if self.models.pane == ModelsPane::Search {
+            let suggestions_count = self.matching_model_suggestions().len();
+            if suggestions_count == 0 {
+                self.models.suggestion_index = 0;
+                return;
+            }
+            if delta > 0 {
+                self.models.suggestion_index =
+                    (self.models.suggestion_index + 1).min(suggestions_count);
+            } else {
+                self.models.suggestion_index = self.models.suggestion_index.saturating_sub(1);
+            }
+            return;
+        }
         let (index, length) = match self.models.pane {
             ModelsPane::Repositories => (
                 &mut self.models.repository_index,
@@ -748,7 +827,21 @@ impl App {
             HubEvent::Error(message) => {
                 self.models.searching = false;
                 self.models.download = None;
-                self.models.status = Some(message);
+                if message.contains("timed out")
+                    || message.contains("Connect")
+                    || message.contains("dns error")
+                {
+                    self.models.status = Some(
+                        self.language
+                            .text(
+                                "Connection to Hugging Face timed out. Check network or proxy.",
+                                "Таймаут подключения к Hugging Face. Проверьте интернет или прокси.",
+                            )
+                            .into(),
+                    );
+                } else {
+                    self.models.status = Some(message);
+                }
             }
         }
     }
@@ -919,6 +1012,7 @@ pub(super) mod tests {
                 search_input: String::new(),
                 active_query: String::new(),
                 searching: false,
+                suggestion_index: 0,
                 repositories: Vec::new(),
                 repository_index: 0,
                 open_repository: None,
@@ -1189,5 +1283,36 @@ pub(super) mod tests {
                 language.text("Model stopped", "Модель остановлена")
             );
         }
+    }
+
+    #[test]
+    fn model_suggestions_and_down_arrow_selection() {
+        let mut app = test_app();
+        app.screen_index = 2;
+        app.models.pane = ModelsPane::Search;
+
+        // Empty search shows default popular models
+        let default_suggestions = app.matching_model_suggestions();
+        assert!(!default_suggestions.is_empty());
+        assert!(default_suggestions.iter().any(|m| m.contains("Qwen")));
+
+        // Typing 'q' filters suggestions
+        for c in "q".chars() {
+            app.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let q_suggestions = app.matching_model_suggestions();
+        assert!(q_suggestions.iter().all(|m| m.to_lowercase().contains('q')));
+
+        // Down arrow selects first suggestion
+        app.handle_key(make_key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.models.suggestion_index, 1);
+
+        // Enter selects and searches the highlighted suggestion
+        let expected_query = q_suggestions[0];
+        match app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)) {
+            AppAction::Hub(HubCommand::Search(query)) => assert_eq!(query, expected_query),
+            _ => panic!("expected search with selected suggestion"),
+        }
+        assert_eq!(app.models.search_input, expected_query);
     }
 }

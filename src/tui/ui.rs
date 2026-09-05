@@ -264,14 +264,43 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             ));
             lines.push(Line::raw(""));
-            lines.push(Line::raw(if app.models.searching {
-                l.text("Searching Hugging Face…", "Поиск на Hugging Face…")
+            if app.models.searching {
+                lines.push(Line::raw(
+                    l.text("Searching Hugging Face…", "Поиск на Hugging Face…"),
+                ));
             } else {
-                l.text(
-                    "Type a model name and press Enter.",
-                    "Введите название модели и нажмите Enter.",
-                )
-            }));
+                let suggestions = app.matching_model_suggestions();
+                lines.push(Line::styled(
+                    if app.models.search_input.is_empty() {
+                        l.text(
+                            "Popular models on Hugging Face (type to filter, ↓/↑ to select):",
+                            "Популярные модели на Hugging Face (вводите для фильтра, ↓/↑ для выбора):",
+                        )
+                    } else {
+                        l.text(
+                            "Matching suggestions (press ↓/↑ to select, Enter to search):",
+                            "Подходящие подсказки (нажимайте ↓/↑ для выбора, Enter для поиска):",
+                        )
+                    },
+                    Style::default().fg(MUTED),
+                ));
+                lines.push(Line::raw(""));
+                if suggestions.is_empty() {
+                    lines.push(Line::styled(
+                        l.text(
+                            "No preset matches. Press Enter to search all of Hugging Face.",
+                            "Нет точных совпадений среди популярных. Нажмите Enter для поиска по Hugging Face.",
+                        ),
+                        Style::default().fg(MUTED),
+                    ));
+                } else {
+                    for (index, suggestion) in suggestions.iter().enumerate() {
+                        let is_selected = app.models.suggestion_index == index + 1;
+                        lines.push(selectable_line(is_selected, (*suggestion).to_string()));
+                    }
+                }
+            }
+            lines.push(Line::raw(""));
             lines.push(Line::styled(
                 l.text(
                     "Only repositories containing GGUF files are shown.",
@@ -401,7 +430,13 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ModelsPane::Repositories => 4 + app.models.repository_index,
         ModelsPane::Files => 4 + app.models.file_index,
         ModelsPane::Installed => 4 + app.models.installed_index * 3,
-        ModelsPane::Search => 0,
+        ModelsPane::Search => {
+            if app.models.suggestion_index > 0 {
+                3 + app.models.suggestion_index
+            } else {
+                0
+            }
+        }
     };
     let visible_height = area.height.saturating_sub(2) as usize;
     let scroll = if app.models.download.is_some() || app.models.status.is_some() {

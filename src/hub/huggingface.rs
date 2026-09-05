@@ -7,7 +7,8 @@ use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::time::Duration;
 
-const ENDPOINT: &str = "https://huggingface.co";
+const DEFAULT_ENDPOINT: &str = "https://huggingface.co";
+const FALLBACK_ENDPOINT: &str = "https://hf-mirror.com";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HubRepository {
@@ -58,12 +59,17 @@ struct ApiLfs {
 
 impl HuggingFaceClient {
     pub fn new() -> Result<Self> {
+        let endpoint_str =
+            std::env::var("HF_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
         Ok(Self {
             client: Client::builder()
                 .user_agent(format!("BUTION/{}", env!("CARGO_PKG_VERSION")))
-                .connect_timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(45))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_keepalive(Duration::from_secs(30))
                 .build()?,
-            endpoint: Url::parse(ENDPOINT)?,
+            endpoint: Url::parse(&endpoint_str)?,
         })
     }
 
@@ -75,12 +81,8 @@ impl HuggingFaceClient {
         })
     }
 
-    pub async fn search(&self, query: &str) -> Result<Vec<HubRepository>> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut url = self.endpoint.join("api/models")?;
+    async fn search_endpoint(&self, endpoint: &Url, query: &str) -> Result<Vec<HubRepository>> {
+        let mut url = endpoint.join("api/models")?;
         url.query_pairs_mut()
             .append_pair("search", query)
             .append_pair("filter", "gguf")
@@ -115,8 +117,29 @@ impl HuggingFaceClient {
             .collect())
     }
 
-    pub async fn files(&self, repository: &str) -> Result<Vec<HubFile>> {
-        let mut url = self.endpoint.clone();
+    pub async fn search(&self, query: &str) -> Result<Vec<HubRepository>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        match self.search_endpoint(&self.endpoint, query).await {
+            Ok(repos) => Ok(repos),
+            Err(primary_err) => {
+                let base = self.endpoint.as_str().trim_end_matches('/');
+                if base == DEFAULT_ENDPOINT {
+                    if let Ok(fallback_url) = Url::parse(FALLBACK_ENDPOINT) {
+                        if let Ok(repos) = self.search_endpoint(&fallback_url, query).await {
+                            return Ok(repos);
+                        }
+                    }
+                }
+                Err(primary_err)
+            }
+        }
+    }
+
+    async fn files_endpoint(&self, endpoint: &Url, repository: &str) -> Result<Vec<HubFile>> {
+        let mut url = endpoint.clone();
         {
             let mut segments = url
                 .path_segments_mut()
@@ -161,6 +184,23 @@ impl HuggingFaceClient {
             bail!("repository contains no supported standalone GGUF files");
         }
         Ok(files)
+    }
+
+    pub async fn files(&self, repository: &str) -> Result<Vec<HubFile>> {
+        match self.files_endpoint(&self.endpoint, repository).await {
+            Ok(files) => Ok(files),
+            Err(primary_err) => {
+                let base = self.endpoint.as_str().trim_end_matches('/');
+                if base == DEFAULT_ENDPOINT {
+                    if let Ok(fallback_url) = Url::parse(FALLBACK_ENDPOINT) {
+                        if let Ok(files) = self.files_endpoint(&fallback_url, repository).await {
+                            return Ok(files);
+                        }
+                    }
+                }
+                Err(primary_err)
+            }
+        }
     }
 
     pub fn download_url(&self, file: &HubFile) -> Result<Url> {

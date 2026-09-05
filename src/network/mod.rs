@@ -22,6 +22,7 @@ pub enum InterfaceKind {
     Thunderbolt,
     UsbEthernet,
     Vpn,
+    Virtual,
     Other,
 }
 
@@ -33,6 +34,7 @@ impl std::fmt::Display for InterfaceKind {
             Self::Thunderbolt => "Thunderbolt Bridge",
             Self::UsbEthernet => "USB Ethernet",
             Self::Vpn => "VPN",
+            Self::Virtual => "Virtual",
             Self::Other => "LAN",
         })
     }
@@ -49,7 +51,7 @@ pub struct NetworkInterface {
 
 impl NetworkInterface {
     pub fn usable_for_cluster(&self) -> bool {
-        !self.is_vpn && is_lan_address(self.address)
+        !self.is_vpn && self.kind != InterfaceKind::Virtual && is_lan_address(self.address)
     }
 
     pub fn reaches(&self, remote: IpAddr) -> bool {
@@ -100,12 +102,40 @@ pub fn route_candidates(
 
 pub fn classify_interface(name: &str) -> InterfaceKind {
     let name = name.to_ascii_lowercase();
-    if ["utun", "tun", "tap", "wg", "ppp", "tailscale", "zerotier"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix) || name.contains(prefix))
+    if [
+        "utun",
+        "tun",
+        "tap",
+        "wg",
+        "ppp",
+        "tailscale",
+        "zerotier",
+        "wireguard",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix) || name.contains(prefix))
     {
         InterfaceKind::Vpn
-    } else if name.contains("thunderbolt") || name.starts_with("bridge") {
+    } else if [
+        "vboxnet",
+        "vmnet",
+        "docker",
+        "virbr",
+        "veth",
+        "awdl",
+        "llw",
+        "pktap",
+        "gif",
+        "stf",
+        "anpi",
+        "bridge100",
+        "vethernet",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix) || name.contains(prefix))
+    {
+        InterfaceKind::Virtual
+    } else if name.contains("thunderbolt") || name == "bridge0" || name.starts_with("bridge") {
         InterfaceKind::Thunderbolt
     } else if name.contains("usb") {
         InterfaceKind::UsbEthernet
@@ -126,8 +156,50 @@ pub fn classify_interface(name: &str) -> InterfaceKind {
 pub fn is_lan_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => address.is_private() || address.is_link_local(),
-        IpAddr::V6(address) => address.is_unique_local() || address.is_unicast_link_local(),
+        IpAddr::V6(address) => {
+            address.is_unique_local()
+                && !address.is_unicast_link_local()
+                && !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+        }
     }
+}
+
+pub fn filter_display_addresses(addresses: &[IpAddr]) -> Vec<IpAddr> {
+    let addrs: Vec<IpAddr> = addresses
+        .iter()
+        .copied()
+        .filter(|addr| match addr {
+            IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_unspecified(),
+            IpAddr::V6(v6) => {
+                !v6.is_unicast_link_local()
+                    && !v6.is_loopback()
+                    && !v6.is_unspecified()
+                    && !v6.is_multicast()
+            }
+        })
+        .collect();
+
+    let private_v4: Vec<IpAddr> = addrs
+        .iter()
+        .copied()
+        .filter(|addr| match addr {
+            IpAddr::V4(v4) => v4.is_private(),
+            _ => false,
+        })
+        .collect();
+
+    if !private_v4.is_empty() {
+        let mut res = private_v4;
+        res.dedup();
+        return res;
+    }
+
+    let mut res = addrs;
+    res.sort_by_key(|address| (address.is_ipv6(), address.to_string()));
+    res.dedup();
+    res
 }
 
 fn same_subnet(local: IpAddr, remote: IpAddr, prefix_len: u8) -> bool {
@@ -164,15 +236,22 @@ mod tests {
         assert!(is_lan_address(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 4))));
         assert!(is_lan_address(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 4))));
         assert!(is_lan_address(IpAddr::V6(
+            "fd00::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(!is_lan_address(IpAddr::V6(
             "fe80::1".parse::<Ipv6Addr>().unwrap()
         )));
         assert!(!is_lan_address(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 
     #[test]
-    fn excludes_common_vpn_interfaces() {
+    fn excludes_common_vpn_and_virtual_interfaces() {
         assert_eq!(classify_interface("utun4"), InterfaceKind::Vpn);
         assert_eq!(classify_interface("Tailscale Tunnel"), InterfaceKind::Vpn);
+        assert_eq!(classify_interface("vboxnet0"), InterfaceKind::Virtual);
+        assert_eq!(classify_interface("vmnet1"), InterfaceKind::Virtual);
+        assert_eq!(classify_interface("docker0"), InterfaceKind::Virtual);
+        assert_eq!(classify_interface("awdl0"), InterfaceKind::Virtual);
         assert_eq!(classify_interface("Ethernet 2"), InterfaceKind::Ethernet);
     }
 

@@ -142,8 +142,8 @@ fn parse_service_info(info: &ServiceInfo) -> Result<DiscoveredNode> {
         .ok()
         .and_then(|val| val.parse().ok())
         .unwrap_or(0);
-    let mut addresses: Vec<_> = info.get_addresses().iter().copied().collect();
-    addresses.sort_by_key(|address| (address.is_ipv6(), address.to_string()));
+    let raw_addresses: Vec<IpAddr> = info.get_addresses().iter().copied().collect();
+    let addresses = crate::network::filter_display_addresses(&raw_addresses);
     Ok(DiscoveredNode {
         id,
         name: property("name")?,

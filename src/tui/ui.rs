@@ -211,14 +211,17 @@ fn draw_nodes(frame: &mut Frame<'_>, area: Rect, app: &App) {
             l.node_status(node.status),
             bytes_to_gib(node.available_memory_bytes),
         )));
-        lines.push(Line::styled(
-            node.addresses
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            Style::default().fg(MUTED),
-        ));
+        let display_addresses = crate::network::filter_display_addresses(&node.addresses);
+        if !display_addresses.is_empty() {
+            lines.push(Line::styled(
+                display_addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                Style::default().fg(MUTED),
+            ));
+        }
         lines.push(Line::raw(""));
     }
     if app.nodes.len() <= 1 {
@@ -269,36 +272,20 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     l.text("Searching Hugging Face…", "Поиск на Hugging Face…"),
                 ));
             } else {
-                let suggestions = app.matching_model_suggestions();
                 lines.push(Line::styled(
-                    if app.models.search_input.is_empty() {
-                        l.text(
-                            "Popular models on Hugging Face (type to filter, ↓/↑ to select):",
-                            "Популярные модели на Hugging Face (вводите для фильтра, ↓/↑ для выбора):",
-                        )
-                    } else {
-                        l.text(
-                            "Matching suggestions (press ↓/↑ to select, Enter to search):",
-                            "Подходящие подсказки (нажимайте ↓/↑ для выбора, Enter для поиска):",
-                        )
-                    },
+                    l.text(
+                        "Enter model or repository name and press Enter to search Hugging Face.",
+                        "Введите название модели или репозитория и нажмите Enter для поиска на Hugging Face.",
+                    ),
                     Style::default().fg(MUTED),
                 ));
-                lines.push(Line::raw(""));
-                if suggestions.is_empty() {
-                    lines.push(Line::styled(
-                        l.text(
-                            "No preset matches. Press Enter to search all of Hugging Face.",
-                            "Нет точных совпадений среди популярных. Нажмите Enter для поиска по Hugging Face.",
-                        ),
-                        Style::default().fg(MUTED),
-                    ));
-                } else {
-                    for (index, suggestion) in suggestions.iter().enumerate() {
-                        let is_selected = app.models.suggestion_index == index + 1;
-                        lines.push(selectable_line(is_selected, (*suggestion).to_string()));
-                    }
-                }
+                lines.push(Line::styled(
+                    l.text(
+                        "Examples: qwen, llama, deepseek, mistral, gemma, phi",
+                        "Примеры: qwen, llama, deepseek, mistral, gemma, phi",
+                    ),
+                    Style::default().fg(MUTED),
+                ));
             }
             lines.push(Line::raw(""));
             lines.push(Line::styled(
@@ -435,13 +422,7 @@ fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ModelsPane::Repositories => 4 + app.models.repository_index,
         ModelsPane::Files => 4 + app.models.file_index,
         ModelsPane::Installed => 4 + app.models.installed_index * 3,
-        ModelsPane::Search => {
-            if app.models.suggestion_index > 0 {
-                3 + app.models.suggestion_index
-            } else {
-                0
-            }
-        }
+        ModelsPane::Search => 0,
     };
     let visible_height = area.height.saturating_sub(2) as usize;
     let scroll = if app.models.download.is_some() || app.models.status.is_some() {
@@ -686,18 +667,11 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         _ => {}
     }
     let navigation = if app.screen() == Screen::Chat
-        || (app.screen() == Screen::Models
-            && app.models.pane == ModelsPane::Search
-            && !app.models.search_input.is_empty())
+        || (app.screen() == Screen::Models && app.models.pane == ModelsPane::Search)
     {
         l.text(
             " Tab/Shift+Tab pages   Ctrl+Q quit",
             " Tab/Shift+Tab страницы   Ctrl+Q выход",
-        )
-    } else if app.screen() == Screen::Models && app.models.pane == ModelsPane::Search {
-        l.text(
-            " Tab/Shift+Tab pages   q quit",
-            " Tab/Shift+Tab страницы   q выход",
         )
     } else {
         l.text(

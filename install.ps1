@@ -369,9 +369,10 @@ if (-not $udp) {
     New-NetFirewallRule -DisplayName "BUTION mDNS" -Direction Inbound -Protocol UDP -LocalPort 5353 -Action Allow -Profile Private | Out-Null
 }
 '@
-        $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($FirewallScript))
+        $FirewallScriptPath = Join-Path $TemporaryDir "firewall-config.ps1"
+        Set-Content -Encoding UTF8 -Path $FirewallScriptPath -Value $FirewallScript
         $FirewallProcess = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
-            -ArgumentList "-NoProfile", "-EncodedCommand", $Encoded
+            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$FirewallScriptPath`""
         if ($FirewallProcess.ExitCode -ne 0) {
             Write-Fail "Не удалось настроить Windows Firewall."
         }

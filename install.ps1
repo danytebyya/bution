@@ -49,16 +49,7 @@ function Download-FileWithProgress([string]$Url, [string]$Destination) {
         Remove-Item -Force $Destination -ErrorAction SilentlyContinue
     }
 
-    # 1. Try Windows built-in curl.exe if available (fastest and most reliable for redirects/TLS)
-    $curlCmd = Get-Command "curl.exe" -ErrorAction SilentlyContinue
-    if ($curlCmd) {
-        & $curlCmd.Source -fL -s -S --retry 2 --connect-timeout 15 -o $Destination $Url
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
-            return
-        }
-    }
-
-    # 2. Try HttpWebRequest with progress reporting
+    # 1. First try HttpWebRequest streaming with live interactive progress bar
     try {
         $request = [System.Net.HttpWebRequest]::Create($Url)
         $request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) BUTION-Installer"
@@ -74,14 +65,13 @@ function Download-FileWithProgress([string]$Url, [string]$Destination) {
         $downloadedBytes = 0
         $lastUpdate = [System.Diagnostics.Stopwatch]::StartNew()
         $barWidth = 26
-        $isInteractive = [Environment]::UserInteractive -and (-not [Console]::IsOutputRedirected)
 
         try {
             while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                 $fileStream.Write($buffer, 0, $bytesRead)
                 $downloadedBytes += $bytesRead
 
-                if ($isInteractive -and ($lastUpdate.ElapsedMilliseconds -gt 70 -or $downloadedBytes -ge $totalBytes)) {
+                if ($lastUpdate.ElapsedMilliseconds -gt 50 -or $downloadedBytes -ge $totalBytes) {
                     $lastUpdate.Restart()
                     if ($totalBytes -gt 0) {
                         $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
@@ -107,15 +97,26 @@ function Download-FileWithProgress([string]$Url, [string]$Destination) {
             $response.Close()
         }
 
-        if ($isInteractive) {
-            Write-Host "`r                                                                      `r" -NoNewline
+        Write-Host "`r                                                                      `r" -NoNewline
+        if ((Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+            return
         }
-        return
     }
     catch {
-        # 3. Fallback to Invoke-WebRequest
-        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+        # Fallback to curl or Invoke-WebRequest below
     }
+
+    # 2. Fallback: Windows built-in curl.exe with progress bar (-#)
+    $curlCmd = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    if ($curlCmd) {
+        & $curlCmd.Source -fL -# --retry 2 --connect-timeout 15 -o $Destination $Url
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+            return
+        }
+    }
+
+    # 3. Fallback: Invoke-WebRequest
+    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
 }
 
 function Get-Utf8WebString([string]$Url) {
@@ -198,6 +199,7 @@ try {
         $ButionReady = $false
         try {
             Download-FileWithProgress $ButionUrl $ButionArchive
+            Write-Info "Распаковка архива BUTION…"
             Expand-Archive -Force -Path $ButionArchive -DestinationPath $ButionExtract
             $ButionExe = Get-ChildItem -Path $ButionExtract -Recurse -File -Filter "bution.exe" |
                 Select-Object -First 1
@@ -331,6 +333,7 @@ try {
         $LlamaArchive = Join-Path $TemporaryDir "llama.zip"
         $LlamaExtract = Join-Path $TemporaryDir "llama"
         Download-FileWithProgress $LlamaUrl $LlamaArchive
+        Write-Info "Распаковка архива llama.cpp…"
         Expand-Archive -Force -Path $LlamaArchive -DestinationPath $LlamaExtract
         $LlamaServer = Get-ChildItem -Path $LlamaExtract -Recurse -File -Filter "llama-server.exe" |
             Select-Object -First 1

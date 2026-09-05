@@ -1,166 +1,110 @@
-<div align="center">
+# BUTION
 
-# ⚡ BUTION
+Запуск GGUF-моделей локально или на двух компьютерах через `llama.cpp RPC`, с чатом в терминале.
 
-**Распределённый запуск больших LLM в локальной сети на базе `llama.cpp RPC`**
+[Скачать последнюю версию](https://github.com/danytebyya/bution/releases/latest) · [Сообщить об ошибке](https://github.com/danytebyya/bution/issues) · [MIT](LICENSE)
 
-*Объединяйте оперативную память и вычислительные мощности нескольких компьютеров для запуска тяжёлых GGUF-моделей — без облаков, подписок и сложной настройки.*
+## Быстрый старт
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-3b82f6?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/danytebyya/bution)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-green?style=for-the-badge)](LICENSE)
-[![Engine](https://img.shields.io/badge/engine-llama.cpp%20RPC-blueviolet?style=for-the-badge)](https://github.com/ggml-org/llama.cpp)
+### 1. Установите BUTION
 
----
+**Windows x64 — PowerShell 5.1 или новее:**
 
-</div>
-
-## 💡 О проекте
-
-**BUTION** решает проблему нехватки памяти (RAM/VRAM) на одном устройстве. 
-
-Если для запуска 70B или 32B модели требуется 24–40 ГБ памяти, а у вас есть MacBook (16 ГБ) и Windows-ПК (16 ГБ), BUTION объединяет их в единый кластер. Веса модели распределяются по локальной сети, вычисления распараллеливаются через официальный `llama.cpp RPC`, а вы получаете стриминг ответов прямо в терминале.
-
-> [!NOTE]
-> GGUF-модель хранится **только на основном компьютере (Main)**. На второй компьютер (Worker) файл модели копировать не нужно — необходимые тензоры передаются на worker на лету по локальной сети.
-
----
-
-## 📥 Быстрая установка
-
-### 🍏 macOS (Apple Silicon / Intel)
-```bash
-curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | bash
-```
-
-### 🪟 Windows (x64)
 ```powershell
 irm https://raw.githubusercontent.com/danytebyya/bution/main/install.ps1 | iex
 ```
 
-*Установщик автоматически загружает актуальные бинарники BUTION и `llama.cpp`, добавляет команду `bution` в PATH и настраивает локальные правила сети.*
+**macOS — Apple Silicon или Intel:**
 
----
-
-## 🏁 Быстрый старт
-
-### 1. Подключите устройства к одной сети
-Подключите оба компьютера к одному Wi-Fi роутеру или соедините их напрямую кабелем Ethernet / Thunderbolt для максимальной скорости.
-
-### 2. Запустите дополнительный компьютер (Worker)
-На компьютере, где модели нет:
 ```bash
+curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | bash
+```
+
+Установщик загрузит BUTION и `llama.cpp`, добавит команду `bution` в PATH.
+На Windows подтвердите запрос на настройку Firewall. Затем откройте новое окно терминала.
+Повторная установка пропускает уже установленные компоненты.
+
+### 2. Выберите модель
+
+Скачайте файл `.gguf` отдельно и укажите его полный путь. Для запуска на одном компьютере:
+
+```text
+bution --model "/полный/путь/model.gguf"
+```
+
+В Windows путь выглядит, например, так: `"D:\Models\model.gguf"`.
+
+### 3. Запустите чат
+
+На экране `Cluster` нажмите `Enter`, дождитесь загрузки модели и перейдите в `Chat` клавишей `Tab`.
+Введите сообщение и нажмите `Enter`. Повторное нажатие `Enter` в `Cluster` останавливает модель.
+
+Путь к модели сохраняется. Для следующего запуска достаточно команды `bution`.
+
+## Подключение второго компьютера
+
+Установите BUTION на оба компьютера и подключите их к одной доверенной локальной сети.
+Файл модели нужен только на основном компьютере.
+
+На дополнительном компьютере (worker):
+
+```text
 bution --role worker
 ```
-*Оставьте это окно открытым. Узел перейдёт в режим ожидания подключения.*
 
-### 3. Запустите основной компьютер (Main)
-GGUF-модель должна находиться только на нём.
+На основном компьютере:
 
-**macOS:**
-```bash
-bution --role main --model "/Users/username/Models/model.gguf"
+```text
+bution --role main --model "/полный/путь/model.gguf"
 ```
 
-**Windows:**
-```powershell
-bution --role main --model "D:\Models\model.gguf"
-```
+1. В появившемся окне `Pairing` проверьте имя и адрес узла, выберите `Accept` и нажмите `Enter`.
+2. Дождитесь результатов проверки сети в `Benchmark`.
+3. На основном компьютере нажмите `Enter` в `Cluster`, затем перейдите в `Chat`.
 
-> [!TIP]
-> Путь обязательно заключайте в кавычки, особенно если в нём есть пробелы.  
-> Выбранная роль и путь к модели **автоматически сохраняются**. В следующие разы достаточно просто запустить:
-> ```bash
-> bution
-> ```
+Оставляйте BUTION открытым на обоих устройствах. Текущая версия использует один worker
+и подключает его для вычислений, только если модель не помещается в доступную память основного компьютера.
+Распределение отображается в `Cluster` → `DISTRIBUTION`.
 
-### 4. Соедините компьютеры (Pairing)
-После запуска BUTION автоматически обнаружит узлы в локальной сети:
-1. На обоих экранах появится окно **Pairing** с 6-значным кодом подтверждения.
-2. Сверьте код и нажмите **Accept** (`Enter`).
-3. BUTION автоматически протестирует пропускную способность сети, распределит тензоры и запустит кластер.
-4. Перейдите на вкладку **Chat** (`→`) и начните общение с моделью!
+Если узлы не находятся, проверьте, что сеть Windows имеет профиль «Частная» и роутер не изолирует устройства.
 
----
+## Скачать архив
 
-## ⚡ Прямое соединение через Ethernet-кабель (Turbo)
+Прямые ссылки на последний опубликованный релиз:
 
-Для максимальной скорости генерации токенов (tok/s) рекомендуется соединить два компьютера напрямую сетевым кабелем Ethernet (или Thunderbolt/Type-C).
+- [Windows x64 — ZIP](https://github.com/danytebyya/bution/releases/latest/download/bution-windows-x64.zip)
+- [macOS Apple Silicon — TAR.GZ](https://github.com/danytebyya/bution/releases/latest/download/bution-macos-arm64.tar.gz)
+- [macOS Intel — TAR.GZ](https://github.com/danytebyya/bution/releases/latest/download/bution-macos-x64.tar.gz)
 
-BUTION автоматически измерит скорость всех доступных интерфейсов и направит трафик тензоров через самый быстрый канал.
+Архивы содержат только BUTION. Для автоматической настройки `llama.cpp` и PATH используйте установку выше.
 
-> [!TIP]
-> Если IP-адреса для прямого Ethernet-соединения не назначились автоматически:
-> - **Компьютер 1**: IP `192.168.50.1`, маска `255.255.255.0`
-> - **Компьютер 2**: IP `192.168.50.2`, маска `255.255.255.0`
-> - Поля *Шлюз (Gateway)* и *DNS* оставьте пустыми.
-
----
-
-## ⌨️ Управление в TUI
+## Управление
 
 | Клавиша | Действие |
-|:---|:---|
-| `Tab` / `←` / `→` | Переключение вкладок (`Cluster`, `Nodes`, `Model`, `Benchmark`, `Chat`, `Settings`) |
-| `Space` / `R` | Быстрое переключение роли узла (`Main` ⇄ `Worker` ⇄ `Auto`) |
-| `Enter` | Запуск / остановка модели, подтверждение сопряжения, отправка сообщения в чат |
-| `Esc` | Очистка ввода / возврат назад / отклонение сопряжения |
-| `Ctrl + N` | Начать новый диалог в чате |
-| `Ctrl + L` | Очистить историю сообщений |
-| `Q` / `Ctrl + Q` | Выход и корректная остановка всех фоновых процессов |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Следующий / предыдущий экран |
+| `Enter` | Запуск или остановка в `Cluster`, отправка сообщения в `Chat` |
+| `Ctrl+N` / `Ctrl+L` | Очистить диалог в `Chat` |
+| `Q` | Выход вне `Chat`; в чате — `Ctrl+Q` |
 
----
+## Обновление
 
-## 🛡 Безопасность и порты
-
-| Порт | Протокол | Назначение |
-|:---|:---|:---|
-| `5353` | **UDP** | Обнаружение узлов в локальной сети (mDNS / Bonjour) |
-| `31750` | **TCP** | Зашифрованный управляющий канал BUTION (`Noise XX`) |
-| `31751` | **TCP** | Временный бенчмарк сети (открывается только после сопряжения) |
-| `50052` | **TCP** | Передача тензоров `llama.cpp RPC` |
-| `8080` | **TCP** | Внутренний HTTP API (слушает только `127.0.0.1` на Main) |
-
-- Управляющий канал защищён шифрованием `Noise_XX_25519_ChaChaPoly_BLAKE2s`.
-- Запуск RPC-сервера разрешается строго после обоюдного подтверждения через PIN-код.
-
----
-
-## 🔄 Обновление
-
-При наличии подключения к интернету BUTION в фоновом режиме проверяет наличие обновлений без задержки запуска.
-
-Для автоматического обновления до актуальной версии:
-```bash
+```text
 bution --update
 ```
 
-Или через скрипт переустановки:
+Версия: `bution --version`. Все параметры: `bution --help`.
 
-**macOS:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash
-```
+## Разработка
 
-**Windows:**
-```powershell
-$env:BUTION_FORCE_UPDATE="1"; irm https://raw.githubusercontent.com/danytebyya/bution/main/install.ps1 | iex
-```
-
----
-
-## 🛠 Сборка из исходников
+Требуется Rust 1.85 или новее. Для запуска модели также нужны `llama-server`, `rpc-server` и `llama-bench`;
+каталог с ними можно указать через `--llama-bin-dir`.
 
 ```bash
 git clone https://github.com/danytebyya/bution.git
 cd bution
-cargo test
-cargo build --release
+cargo test --locked
+cargo build --release --locked
 ```
 
----
-
-## 📄 Лицензия
-
-Распространяется по лицензиям **MIT** или **Apache-2.0**. Подробности в файле [LICENSE](LICENSE).
-
+[Архитектура](docs/ARCHITECTURE.md) · [Безопасность](docs/SECURITY.md) · [Лицензия MIT](LICENSE)

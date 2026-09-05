@@ -45,55 +45,76 @@ function Write-Fail([string]$Message) {
 }
 
 function Download-FileWithProgress([string]$Url, [string]$Destination) {
-    $request = [System.Net.HttpWebRequest]::Create($Url)
-    $request.UserAgent = "BUTION-Installer"
-    $request.Timeout = 60000
-    $request.AllowAutoRedirect = $true
+    if (Test-Path $Destination) {
+        Remove-Item -Force $Destination -ErrorAction SilentlyContinue
+    }
 
-    $response = $request.GetResponse()
-    $totalBytes = $response.ContentLength
-    $responseStream = $response.GetResponseStream()
-    $fileStream = [System.IO.File]::Create($Destination)
+    # 1. Try Windows built-in curl.exe if available (fastest and most reliable for redirects/TLS)
+    $curlCmd = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    if ($curlCmd) {
+        & $curlCmd.Source -fL -s -S --retry 2 --connect-timeout 15 -o $Destination $Url
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+            return
+        }
+    }
 
-    $buffer = New-Object byte[] 65536
-    $downloadedBytes = 0
-    $lastUpdate = [System.Diagnostics.Stopwatch]::StartNew()
-    $barWidth = 26
-    $isInteractive = [Environment]::UserInteractive -and (-not [Console]::IsOutputRedirected)
-
+    # 2. Try HttpWebRequest with progress reporting
     try {
-        while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $fileStream.Write($buffer, 0, $bytesRead)
-            $downloadedBytes += $bytesRead
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) BUTION-Installer"
+        $request.Timeout = 60000
+        $request.AllowAutoRedirect = $true
 
-            if ($isInteractive -and ($lastUpdate.ElapsedMilliseconds -gt 70 -or $downloadedBytes -ge $totalBytes)) {
-                $lastUpdate.Restart()
-                if ($totalBytes -gt 0) {
-                    $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
-                    $filled = [int](($percent / 100) * $barWidth)
-                    $empty = $barWidth - $filled
-                    $bar = ("█" * $filled) + ("░" * $empty)
-                    $currMb = ($downloadedBytes / 1MB).ToString("0.0")
-                    $totalMb = ($totalBytes / 1MB).ToString("0.0")
-                    $line = "`r       [$bar] $percent% ($currMb / $totalMb MB)  "
-                    Write-Host -NoNewline $line -ForegroundColor Blue
-                }
-                else {
-                    $currMb = ($downloadedBytes / 1MB).ToString("0.0")
-                    $line = "`r       Загружено: $currMb MB  "
-                    Write-Host -NoNewline $line -ForegroundColor Blue
+        $response = $request.GetResponse()
+        $totalBytes = $response.ContentLength
+        $responseStream = $response.GetResponseStream()
+        $fileStream = [System.IO.File]::Create($Destination)
+
+        $buffer = New-Object byte[] 65536
+        $downloadedBytes = 0
+        $lastUpdate = [System.Diagnostics.Stopwatch]::StartNew()
+        $barWidth = 26
+        $isInteractive = [Environment]::UserInteractive -and (-not [Console]::IsOutputRedirected)
+
+        try {
+            while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fileStream.Write($buffer, 0, $bytesRead)
+                $downloadedBytes += $bytesRead
+
+                if ($isInteractive -and ($lastUpdate.ElapsedMilliseconds -gt 70 -or $downloadedBytes -ge $totalBytes)) {
+                    $lastUpdate.Restart()
+                    if ($totalBytes -gt 0) {
+                        $percent = [Math]::Min(100, [int](($downloadedBytes / $totalBytes) * 100))
+                        $filled = [int](($percent / 100) * $barWidth)
+                        $empty = $barWidth - $filled
+                        $bar = ("█" * $filled) + ("░" * $empty)
+                        $currMb = ($downloadedBytes / 1MB).ToString("0.0")
+                        $totalMb = ($totalBytes / 1MB).ToString("0.0")
+                        $line = "`r       [$bar] $percent% ($currMb / $totalMb MB)  "
+                        Write-Host -NoNewline $line -ForegroundColor Blue
+                    }
+                    else {
+                        $currMb = ($downloadedBytes / 1MB).ToString("0.0")
+                        $line = "`r       Загружено: $currMb MB  "
+                        Write-Host -NoNewline $line -ForegroundColor Blue
+                    }
                 }
             }
         }
-    }
-    finally {
-        $fileStream.Close()
-        $responseStream.Close()
-        $response.Close()
-    }
+        finally {
+            $fileStream.Close()
+            $responseStream.Close()
+            $response.Close()
+        }
 
-    if ($isInteractive) {
-        Write-Host "`r                                                                      `r" -NoNewline
+        if ($isInteractive) {
+            Write-Host "`r                                                                      `r" -NoNewline
+        }
+        return
+    }
+    catch {
+        # 3. Fallback to Invoke-WebRequest
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
     }
 }
 
@@ -181,13 +202,24 @@ try {
             $ButionExe = Get-ChildItem -Path $ButionExtract -Recurse -File -Filter "bution.exe" |
                 Select-Object -First 1
             if ($ButionExe) {
+                if (Test-Path $ButionBinary) {
+                    $oldBinary = "$ButionBinary.old." + [guid]::NewGuid().ToString("N")
+                    try {
+                        Move-Item -Force $ButionBinary $oldBinary -ErrorAction SilentlyContinue
+                    }
+                    catch {
+                        # ignore rename error if not locked
+                    }
+                }
                 Copy-Item -Force $ButionExe.FullName $ButionBinary
                 $ButionReady = $true
                 Write-Success "BUTION успешно загружен и установлен"
+                Get-ChildItem -Path $BinDir -Filter "bution-real.exe.old.*" -ErrorAction SilentlyContinue |
+                    ForEach-Object { Remove-Item -Force $_.FullName -ErrorAction SilentlyContinue }
             }
         }
         catch {
-            Write-Info "Готовый релиз недоступен — выполняю автоматическую сборку…"
+            Write-Info "Не удалось применить готовый релиз ($($_.Exception.Message)) — выполняю автоматическую сборку…"
         }
 
         if (-not $ButionReady) {

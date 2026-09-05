@@ -95,6 +95,7 @@ else
     tar -xzf "${bution_archive}" -C "${temporary_dir}" &
     spin $! "Распаковка архива BUTION…"
     wait $!
+    rm -f "${bin_dir}/bution-real" 2>/dev/null || true
     cp "${temporary_dir}/bution" "${bin_dir}/bution-real"
     chmod +x "${bin_dir}/bution-real"
     success "BUTION успешно загружен и установлен"

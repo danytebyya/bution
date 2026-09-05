@@ -877,7 +877,7 @@ impl App {
                         addresses: node.addresses,
                         control_port: node.control_port,
                         rpc_port: 50_052,
-                        available_memory_bytes: 0,
+                        available_memory_bytes: node.memory_bytes,
                         compute_backend: node.backend,
                     });
                     self.push_log(format!(

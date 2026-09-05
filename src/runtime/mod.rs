@@ -91,6 +91,7 @@ impl RuntimeHandle {
                 public_key: identity.public_key(),
                 role: format!("{:?}", settings.role).to_ascii_lowercase(),
                 backend: hardware.backend.to_string(),
+                memory_bytes: hardware.ai_memory_bytes,
                 control_port,
             }
         };

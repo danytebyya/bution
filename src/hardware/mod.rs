@@ -49,7 +49,11 @@ impl HardwareProfile {
 
         let architecture = std::env::consts::ARCH.to_owned();
         let os = System::name().unwrap_or_else(|| std::env::consts::OS.to_owned());
-        let unified_memory = os == "macOS" && matches!(architecture.as_str(), "aarch64");
+        let is_macos = os.eq_ignore_ascii_case("macos")
+            || os.eq_ignore_ascii_case("darwin")
+            || cfg!(target_os = "macos");
+        let unified_memory =
+            is_macos && (architecture == "aarch64" || cfg!(target_arch = "aarch64"));
         let backend = detect_backend(unified_memory);
         let total_memory_bytes = system.total_memory();
         let currently_available_bytes = system.available_memory();
@@ -68,7 +72,11 @@ impl HardwareProfile {
             logical_cores: system.cpus().len(),
             total_memory_bytes,
             currently_available_bytes,
-            ai_memory_bytes: available_for_ai(total_memory_bytes, currently_available_bytes),
+            ai_memory_bytes: available_for_ai(
+                total_memory_bytes,
+                currently_available_bytes,
+                unified_memory,
+            ),
             backend,
             unified_memory,
         }
@@ -83,11 +91,19 @@ impl HardwareProfile {
     }
 }
 
-/// Keeps the larger of 2 GiB or 15% of physical memory for the OS, while also
-/// respecting the memory actually available at the time of detection.
-pub fn available_for_ai(total: u64, currently_available: u64) -> u64 {
+/// Keeps the larger of 2 GiB or 15% of physical memory for the OS.
+/// On macOS Unified Memory, inactive cache is purged on Metal allocation,
+/// allowing the safe budget to use physical memory minus the OS reserve.
+pub fn available_for_ai(total: u64, currently_available: u64, unified_memory: bool) -> u64 {
     let reserve = (total.saturating_mul(15) / 100).max(2 * GIB);
-    currently_available.min(total.saturating_sub(reserve))
+    let safe_budget = total.saturating_sub(reserve);
+    if unified_memory {
+        safe_budget
+    } else if currently_available > 0 {
+        currently_available.min(safe_budget)
+    } else {
+        safe_budget
+    }
 }
 
 pub fn bytes_to_gib(bytes: u64) -> f64 {
@@ -131,16 +147,22 @@ mod tests {
 
     #[test]
     fn reserves_two_gib_on_small_machine() {
-        assert_eq!(available_for_ai(8 * GIB, 7 * GIB), 6 * GIB);
+        assert_eq!(available_for_ai(8 * GIB, 7 * GIB, false), 6 * GIB);
     }
 
     #[test]
     fn reserves_fifteen_percent_on_large_machine() {
-        assert_eq!(available_for_ai(32 * GIB, 32 * GIB), 29_205_777_613);
+        assert_eq!(available_for_ai(32 * GIB, 32 * GIB, false), 29_205_777_613);
     }
 
     #[test]
     fn current_pressure_reduces_ai_budget() {
-        assert_eq!(available_for_ai(32 * GIB, 4 * GIB), 4 * GIB);
+        assert_eq!(available_for_ai(32 * GIB, 4 * GIB, false), 4 * GIB);
+    }
+
+    #[test]
+    fn unified_memory_uses_full_safe_budget() {
+        assert_eq!(available_for_ai(16 * GIB, 1 * GIB, true), 14_602_888_807); // 13.6 GiB
+        assert_eq!(available_for_ai(8 * GIB, 500 * 1024 * 1024, true), 6 * GIB);
     }
 }

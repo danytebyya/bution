@@ -15,6 +15,7 @@ pub struct DiscoveryAdvertisement {
     pub public_key: String,
     pub role: String,
     pub backend: String,
+    pub memory_bytes: u64,
     pub control_port: u16,
 }
 
@@ -25,6 +26,7 @@ pub struct DiscoveredNode {
     pub public_key: String,
     pub role: String,
     pub backend: String,
+    pub memory_bytes: u64,
     pub addresses: Vec<IpAddr>,
     pub control_port: u16,
     pub protocol_version: u16,
@@ -50,12 +52,14 @@ impl MdnsDiscovery {
         let id = advertisement.id.to_string();
         let protocol = PROTOCOL_VERSION.to_string();
         let port = advertisement.control_port.to_string();
+        let memory = advertisement.memory_bytes.to_string();
         let properties = [
             ("id", id.as_str()),
             ("name", advertisement.name.as_str()),
             ("key", advertisement.public_key.as_str()),
             ("role", advertisement.role.as_str()),
             ("backend", advertisement.backend.as_str()),
+            ("memory", memory.as_str()),
             ("protocol", protocol.as_str()),
             ("control_port", port.as_str()),
         ];
@@ -134,6 +138,10 @@ fn parse_service_info(info: &ServiceInfo) -> Result<DiscoveredNode> {
         .parse()
         .context("mDNS record has an invalid control port")?;
 
+    let memory_bytes = property("memory")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(0);
     let mut addresses: Vec<_> = info.get_addresses().iter().copied().collect();
     addresses.sort_by_key(|address| (address.is_ipv6(), address.to_string()));
     Ok(DiscoveredNode {
@@ -142,6 +150,7 @@ fn parse_service_info(info: &ServiceInfo) -> Result<DiscoveredNode> {
         public_key: property("key")?,
         role: property("role")?,
         backend: property("backend")?,
+        memory_bytes,
         addresses,
         control_port,
         protocol_version,
@@ -162,6 +171,7 @@ mod tests {
             ("key", "public-key"),
             ("role", "automatic"),
             ("backend", "CPU"),
+            ("memory", "17179869184"),
             ("protocol", "1"),
             ("control_port", "31750"),
         ];
@@ -177,6 +187,7 @@ mod tests {
         let node = parse_service_info(&info).unwrap();
         assert_eq!(node.id, id);
         assert_eq!(node.name, "HONOR Laptop");
+        assert_eq!(node.memory_bytes, 17_179_869_184);
         assert_eq!(node.addresses[0].to_string(), "192.168.1.18");
     }
 }

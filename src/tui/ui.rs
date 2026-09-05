@@ -636,10 +636,19 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         }
         _ => {}
     }
-    let navigation = if app.screen() == Screen::Chat || app.screen() == Screen::Models {
+    let navigation = if app.screen() == Screen::Chat
+        || (app.screen() == Screen::Models
+            && app.models.pane == ModelsPane::Search
+            && !app.models.search_input.is_empty())
+    {
         l.text(
             " Tab/Shift+Tab pages   Ctrl+Q quit",
             " Tab/Shift+Tab страницы   Ctrl+Q выход",
+        )
+    } else if app.screen() == Screen::Models && app.models.pane == ModelsPane::Search {
+        l.text(
+            " Tab/Shift+Tab pages   q quit",
+            " Tab/Shift+Tab страницы   q выход",
         )
     } else {
         l.text(

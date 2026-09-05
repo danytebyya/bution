@@ -420,6 +420,12 @@ impl App {
 
     fn handle_models_key(&mut self, key: KeyEvent) -> AppAction {
         match key.code {
+            KeyCode::Char('q')
+                if self.models.pane == ModelsPane::Search
+                    && self.models.search_input.is_empty() =>
+            {
+                self.running = false;
+            }
             KeyCode::Char('q' | 'Q') if self.models.pane != ModelsPane::Search => {
                 self.running = false;
             }
@@ -1079,6 +1085,21 @@ pub(super) mod tests {
             _ => panic!("expected an asynchronous Hub search"),
         }
         assert!(app.models.searching);
+    }
+
+    #[test]
+    fn q_quits_from_an_empty_models_search() {
+        let mut app = test_app();
+        app.screen_index = 2;
+        app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!app.running);
+
+        let mut app = test_app();
+        app.screen_index = 2;
+        app.models.search_input = "model".into();
+        app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.running);
+        assert_eq!(app.models.search_input, "modelq");
     }
 
     #[test]

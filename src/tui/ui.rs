@@ -1,661 +1,637 @@
 use super::{App, Screen};
+use crate::cluster::NodeRole;
 use crate::hardware::bytes_to_gib;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
-
-const LOGO: &str = r#"██████╗ ██╗   ██╗████████╗██╗ ██████╗ ███╗   ██╗
-██╔══██╗██║   ██║╚══██╔══╝██║██╔═══██╗████╗  ██║
-██████╔╝██║   ██║   ██║   ██║██║   ██║██╔██╗ ██║
-██╔══██╗██║   ██║   ██║   ██║██║   ██║██║╚██╗██║
-██████╔╝╚██████╔╝   ██║   ██║╚██████╔╝██║ ╚████║
-╚═════╝  ╚═════╝    ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝"#;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Tabs, Wrap};
 
 const BLUE: Color = Color::Rgb(59, 130, 246);
-const BLUE_ACCENT: Color = Color::Rgb(96, 165, 250);
-const MUTED: Color = Color::Rgb(125, 133, 151);
-const PANEL: Color = Color::Rgb(30, 35, 48);
+const MUTED: Color = Color::Rgb(145, 153, 170);
+const BORDER: Color = Color::Rgb(60, 69, 86);
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
-    let show_logo = area.height >= 30 && area.width >= 54;
+    let lang = app.language;
+    if area.width < 60 || area.height < 18 {
+        frame.render_widget(
+            Paragraph::new(lang.text(
+                "BUTION\nEnlarge the terminal.\nMinimum: 60 x 18\nCtrl+Q: quit",
+                "BUTION\nУвеличьте окно терминала.\nМинимум: 60 x 18\nCtrl+Q: выход",
+            ))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if show_logo { 8 } else { 3 }),
-            Constraint::Min(12),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(area);
-    draw_header(frame, rows[0], show_logo);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(20),
-            Constraint::Min(40),
-            Constraint::Length(28),
-        ])
-        .split(rows[1]);
-    draw_navigation(frame, columns[0], app);
-    draw_content(frame, columns[1], app);
-    draw_telemetry(frame, columns[2], app);
-    draw_help(frame, rows[2]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " BUTION",
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  v{}", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(MUTED),
+            ),
+        ])),
+        rows[0],
+    );
+    frame.render_widget(
+        Tabs::new(Screen::ALL.iter().map(|screen| screen.label(lang)))
+            .select(app.screen_index)
+            .divider(" ")
+            .style(Style::default().fg(MUTED))
+            .highlight_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+        rows[1],
+    );
+    match app.screen() {
+        Screen::Cluster => draw_cluster(frame, rows[2], app),
+        Screen::Nodes => draw_nodes(frame, rows[2], app),
+        Screen::Models => draw_model(frame, rows[2], app),
+        Screen::Benchmark => draw_network(frame, rows[2], app),
+        Screen::Chat => draw_chat(frame, rows[2], app),
+        Screen::Settings => draw_settings(frame, rows[2], app),
+    }
+    draw_metrics(frame, rows[3], app);
+    frame.render_widget(
+        Paragraph::new(help_lines(app))
+            .style(Style::default().fg(MUTED))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(BORDER)),
+            ),
+        rows[4],
+    );
     if app.pending_pairing.is_some() {
         draw_pairing(frame, area, app);
     }
 }
 
-fn draw_header(frame: &mut Frame<'_>, area: Rect, show_logo: bool) {
-    let text = if show_logo {
-        let mut text =
-            Text::from(LOGO).style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD));
-        text.lines.push(Line::styled(
-            "Distributed Local AI Cluster",
-            Style::default().fg(MUTED),
-        ));
-        text
-    } else {
-        Text::from(Line::from(vec![
-            Span::styled(
-                "BUTION",
-                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  Distributed Local AI Cluster", Style::default().fg(MUTED)),
-        ]))
-    };
-    frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), area);
-}
-
 fn panel(title: &str) -> Block<'_> {
     Block::default()
         .title(format!(" {title} "))
-        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
+        .title_style(Style::default().fg(BLUE))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PANEL))
+        .border_style(Style::default().fg(BORDER))
+        .padding(Padding::horizontal(1))
 }
 
-fn draw_navigation(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let items = Screen::ALL.iter().enumerate().map(|(index, screen)| {
-        let selected = index == app.screen_index;
-        let prefix = if selected { "› " } else { "  " };
-        ListItem::new(Line::from(Span::styled(
-            format!("{prefix}{}", screen.label()),
-            if selected {
-                Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(MUTED)
-            },
-        )))
-    });
-    frame.render_widget(List::new(items).block(panel("BUTION")), area);
-}
-
-fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    match app.screen() {
-        Screen::Cluster => draw_cluster(frame, area, app),
-        Screen::Nodes => draw_nodes(frame, area, app),
-        Screen::Models => draw_models(frame, area, app),
-        Screen::Benchmark => draw_benchmark(frame, area, app),
-        Screen::Chat => draw_chat(frame, area, app),
-        Screen::Settings => draw_settings(frame, area, app),
-    }
+fn field(label: &str, value: impl Into<String>) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), Style::default().fg(MUTED)),
+        Span::raw(value.into()),
+    ])
 }
 
 fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let model = app
-        .model
-        .as_ref()
-        .map(|model| model.name.as_str())
-        .unwrap_or("Не выбрана (запустите с --model /путь/к/model.gguf)");
-    let role_badge = match app.settings.role {
-        crate::cluster::NodeRole::Automatic => "Automatic",
-        crate::cluster::NodeRole::Main => "Main (Контроллер)",
-        crate::cluster::NodeRole::Worker => "Worker (Дополнительный узел)",
+    let l = app.language;
+    let status = if app.cluster_running {
+        l.text("Model process started", "Процесс модели запущен")
+    } else if app.settings.role == NodeRole::Worker {
+        l.text(
+            "Waiting for the main computer",
+            "Ожидание основного компьютера",
+        )
+    } else if app.model.is_some() {
+        l.text("Ready to start", "Готов к запуску")
+    } else {
+        l.text(
+            "Select a model to get started",
+            "Выберите модель для запуска",
+        )
     };
-    let mut text = vec![
+    let mut lines = vec![
         Line::styled(
-            if app.cluster_running {
-                "● КЛАСТЕР АКТИВЕН • МОДЕЛЬ ЗАПУЩЕНА"
-            } else {
-                match app.settings.role {
-                    crate::cluster::NodeRole::Worker => {
-                        "● РЕЖИМ WORKER (Ожидание подключения Main)"
-                    }
-                    crate::cluster::NodeRole::Main => "● РЕЖИМ MAIN (Готов к запуску модели)",
-                    crate::cluster::NodeRole::Automatic => {
-                        "● КЛАСТЕР ГОТОВ (Автоматический выбор роли)"
-                    }
-                }
-            },
-            Style::default()
-                .fg(if app.cluster_running {
-                    Color::Green
-                } else {
-                    BLUE_ACCENT
-                })
-                .add_modifier(Modifier::BOLD),
+            status,
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Компьютер:   ", Style::default().fg(MUTED)),
-            Span::styled(
-                &app.settings.node_name,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Роль узла:   ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!("[ {role_badge} ]"),
-                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  (нажмите Space для смены: Main / Worker / Auto)",
-                Style::default().fg(MUTED),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Backend:     ", Style::default().fg(MUTED)),
-            Span::raw(app.hardware.backend.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Память AI:   ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!(
-                    "{:.1} GiB доступно для вычислений",
-                    app.hardware.ai_memory_gib()
-                ),
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Модель:      ", Style::default().fg(MUTED)),
-            Span::styled(
-                model,
-                if app.model.is_some() {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            ),
-        ]),
-        Line::raw(""),
+        field(l.text("Role", "Роль"), l.role(app.settings.role)),
+        field(
+            l.text("Model", "Модель"),
+            app.model
+                .as_ref()
+                .map(|m| m.name.as_str())
+                .unwrap_or(l.text("Not selected", "Не выбрана")),
+        ),
+        field(
+            l.text("AI memory", "Память для ИИ"),
+            format!("{:.1} GiB", app.hardware.ai_memory_gib()),
+        ),
+        field(
+            l.text("Backend", "Вычисления"),
+            app.hardware.backend.to_string(),
+        ),
+        field(
+            l.text("Other nodes", "Другие узлы"),
+            app.nodes
+                .iter()
+                .filter(|n| n.id != app.settings.node_id)
+                .count()
+                .to_string(),
+        ),
     ];
-
-    if app.cluster_running {
-        text.push(Line::styled(
-            "▶ Нажмите [ Enter ] для остановки модели и освобождения памяти",
-            Style::default()
-                .fg(Color::LightRed)
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else if app.settings.role == crate::cluster::NodeRole::Worker {
-        text.push(Line::styled(
-            "⏳ Узел готов принимать тензоры от Main компьютера по сети (llama.cpp RPC)",
-            Style::default().fg(BLUE_ACCENT),
-        ));
-    } else if app.model.is_some() {
-        text.push(Line::styled(
-            "▶ Нажмите [ Enter ] для запуска распределённого кластера",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        text.push(Line::styled(
-            "ℹ Запустите с --model \"/путь/к/model.gguf\" или нажмите Space для переключения в Worker",
-            Style::default().fg(BLUE_ACCENT),
-        ));
-    }
-
     if !app.distribution.is_empty() {
-        text.push(Line::raw(""));
-        text.push(Line::styled(
-            "РАСПРЕДЕЛЕНИЕ СЛОЁВ ТЕНЗОРОВ (TENSOR SPLIT)",
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            l.text("Distribution", "Распределение"),
+            Style::default().fg(MUTED),
         ));
         for (name, fraction) in &app.distribution {
-            let pct = (fraction * 100.0).round() as usize;
-            let bar_len = pct / 5;
-            let bar = "█".repeat(bar_len) + &"░".repeat(20 - bar_len);
-            text.push(Line::from(vec![
-                Span::raw(format!("  {name:<18} ")),
-                Span::styled(format!("[{bar}]"), Style::default().fg(BLUE_ACCENT)),
-                Span::styled(format!(" {pct:>3}%"), Style::default().fg(Color::White)),
-            ]));
+            let name = if name == "Local" {
+                l.text("This computer", "Этот компьютер")
+            } else {
+                name
+            };
+            lines.push(Line::raw(format!("{name}  {:.0}%", fraction * 100.0)));
         }
-    }
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(panel("КЛАСТЕР / CLUSTER"))
-            .wrap(Wrap { trim: true }),
-        area,
-    );
-}
-
-fn draw_nodes(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut lines = Vec::new();
-    for node in &app.nodes {
-        lines.push(Line::from(vec![
-            Span::styled("● ", Style::default().fg(Color::Green)),
-            Span::styled(&node.name, Style::default().add_modifier(Modifier::BOLD)),
-        ]));
-        lines.push(Line::raw(format!(
-            "  {} • {:.1} GiB available",
-            node.compute_backend,
-            bytes_to_gib(node.available_memory_bytes)
+    } else if app.model.is_none() && app.settings.role != NodeRole::Worker {
+        lines.push(Line::raw(""));
+        lines.push(Line::raw(l.text(
+            "Restart with the path to your GGUF file:",
+            "Перезапустите с путём к файлу GGUF:",
         )));
         lines.push(Line::styled(
-            format!("  {:?} • {:?}", node.role, node.status),
-            Style::default().fg(MUTED),
+            "bution --model \"model.gguf\"",
+            Style::default().fg(BLUE),
         ));
-        lines.push(Line::raw(""));
     }
-    frame.render_widget(Paragraph::new(lines).block(panel("NODES")), area);
-}
-
-fn draw_models(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let lines = if let Some(model) = &app.model {
-        vec![
-            Line::styled(
-                &model.name,
-                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Line::raw(""),
-            Line::raw(format!(
-                "File size       {:.1} GiB",
-                bytes_to_gib(model.file_size_bytes)
-            )),
-            Line::raw(format!(
-                "Estimated RAM   {:.1} GiB",
-                bytes_to_gib(model.estimated_memory_bytes)
-            )),
-            Line::raw(format!(
-                "Cluster memory  {:.1} GiB",
-                app.nodes
-                    .iter()
-                    .map(|node| node.available_memory_bytes)
-                    .sum::<u64>() as f64
-                    / 1_073_741_824.0
-            )),
-        ]
-    } else {
-        vec![
-            Line::styled("No GGUF model selected", Style::default().fg(MUTED)),
-            Line::raw(""),
-            Line::raw("Start with --model /path/to/model.gguf"),
-        ]
-    };
-    frame.render_widget(Paragraph::new(lines).block(panel("MODEL")), area);
-}
-
-fn draw_benchmark(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Length(4),
-            Constraint::Length(4),
-            Constraint::Min(1),
-        ])
-        .split(area.inner(ratatui::layout::Margin {
-            horizontal: 2,
-            vertical: 2,
-        }));
-    let latency = app
-        .best_route
-        .as_ref()
-        .map(|route| route.benchmark.latency.average_ms);
-    let bandwidth = app
-        .best_route
-        .as_ref()
-        .map(|route| route.benchmark.bandwidth.megabits_per_second);
-    let stability = app
-        .best_route
-        .as_ref()
-        .map(|route| route.benchmark.stability);
     frame.render_widget(
-        Gauge::default()
-            .block(panel("Latency"))
-            .gauge_style(Style::default().fg(BLUE))
-            .ratio(
-                latency
-                    .map(|value| (1.0 / (1.0 + value / 5.0)).clamp(0.0, 1.0))
-                    .unwrap_or(0.0),
-            )
-            .label(
-                latency
-                    .map(|value| format!("{value:.1} ms"))
-                    .unwrap_or_else(|| "Not tested".into()),
-            ),
-        rows[0],
-    );
-    frame.render_widget(
-        Gauge::default()
-            .block(panel("Bandwidth"))
-            .gauge_style(Style::default().fg(BLUE_ACCENT))
-            .ratio(
-                bandwidth
-                    .map(|value| (value / 1_000.0).clamp(0.0, 1.0))
-                    .unwrap_or(0.0),
-            )
-            .label(
-                bandwidth
-                    .map(|value| format!("{value:.0} Mbps"))
-                    .unwrap_or_else(|| "Not tested".into()),
-            ),
-        rows[1],
-    );
-    frame.render_widget(
-        Gauge::default()
-            .block(panel("Stability"))
-            .gauge_style(Style::default().fg(Color::Green))
-            .ratio(
-                stability
-                    .map(|value| match value {
-                        crate::network::Stability::Excellent => 1.0,
-                        crate::network::Stability::Good => 0.7,
-                        crate::network::Stability::Unstable => 0.3,
-                    })
-                    .unwrap_or(0.0),
-            )
-            .label(
-                stability
-                    .map(|value| format!("{value:?}"))
-                    .unwrap_or_else(|| "Not tested".into()),
-            ),
-        rows[2],
-    );
-    frame.render_widget(panel("NETWORK BENCHMARK"), area);
-}
-
-fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let model = app
-        .model
-        .as_ref()
-        .map(|model| model.name.as_str())
-        .unwrap_or("No model running");
-    let mut text = vec![
-        Line::styled(
-            model,
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-        ),
-        Line::styled(
-            format!("{} Node(s)", app.nodes.len()),
-            Style::default().fg(MUTED),
-        ),
-        Line::raw(""),
-    ];
-    if app.chat_messages.is_empty() {
-        text.push(Line::styled(
-            if app.cluster_running {
-                "Type a message and press Enter."
-            } else {
-                "Start a model from Cluster before chatting."
-            },
-            Style::default().fg(MUTED),
-        ));
-        text.push(Line::raw(""));
-    }
-    for message in &app.chat_messages {
-        let label = match message.role {
-            crate::chat::ChatRole::System => "System:",
-            crate::chat::ChatRole::User => "You:",
-            crate::chat::ChatRole::Assistant => "Assistant:",
-        };
-        text.push(Line::styled(
-            label,
-            Style::default()
-                .fg(if message.role == crate::chat::ChatRole::User {
-                    BLUE_ACCENT
-                } else {
-                    BLUE
-                })
-                .add_modifier(Modifier::BOLD),
-        ));
-        text.extend(message.content.lines().map(Line::raw));
-        if message.role == crate::chat::ChatRole::Assistant
-            && message.content.is_empty()
-            && app.chat_streaming
-        {
-            text.push(Line::styled("▌", Style::default().fg(BLUE)));
-        }
-        text.push(Line::raw(""));
-    }
-    let cursor = if app.chat_streaming {
-        "generating…".into()
-    } else {
-        format!("> {}_", app.chat_input)
-    };
-    text.push(Line::styled(cursor, Style::default().fg(BLUE)));
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(panel("CHAT"))
+        Paragraph::new(lines)
+            .block(panel(app.screen().label(l)))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let trust = app.settings.trusted_peers.len();
-    let version_line = if let Some(new_ver) = &app.update_available {
-        Line::from(vec![
-            Span::styled("Version          ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!("v{} ", env!("CARGO_PKG_VERSION")),
-                Style::default().fg(Color::White),
+fn draw_nodes(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let l = app.language;
+    let mut lines = Vec::new();
+    for node in &app.nodes {
+        let local = node.id == app.settings.node_id;
+        lines.push(Line::styled(
+            format!(
+                "{}{}",
+                node.name,
+                if local {
+                    l.text(" (this computer)", " (этот компьютер)")
+                } else {
+                    ""
+                }
             ),
-            Span::styled(
-                format!("(Доступно обновление: {new_ver} ⚡)"),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("Version          ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!("v{} ", env!("CARGO_PKG_VERSION")),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled("(актуальная)", Style::default().fg(Color::Green)),
-        ])
-    };
-
-    let text = vec![
-        version_line,
-        Line::from(vec![
-            Span::styled("Node name       ", Style::default().fg(MUTED)),
-            Span::raw(&app.settings.node_name),
-        ]),
-        Line::from(vec![
-            Span::styled("Permanent UUID  ", Style::default().fg(MUTED)),
-            Span::raw(app.settings.node_id.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Mode             ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!("{:?}", app.settings.role),
-                Style::default().fg(BLUE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Control port     ", Style::default().fg(MUTED)),
-            Span::raw(app.settings.control_port.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("RPC port         ", Style::default().fg(MUTED)),
-            Span::raw(app.settings.rpc_port.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Trusted nodes    ", Style::default().fg(MUTED)),
-            Span::raw(trust.to_string()),
-        ]),
-        Line::raw(""),
-        Line::styled(
-            "Space: сменить роль • bution --update: обновить",
             Style::default().fg(BLUE),
-        ),
-    ];
-    frame.render_widget(Paragraph::new(text).block(panel("SETTINGS")), area);
+        ));
+        lines.push(Line::raw(format!(
+            "{} · {} · {:.1} GiB",
+            l.role(node.role),
+            l.node_status(node.status),
+            bytes_to_gib(node.available_memory_bytes),
+        )));
+        lines.push(Line::styled(
+            node.addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            Style::default().fg(MUTED),
+        ));
+        lines.push(Line::raw(""));
+    }
+    if app.nodes.len() <= 1 {
+        lines.push(Line::raw(l.text(
+            "Looking for computers on the local network…",
+            "Поиск компьютеров в локальной сети…",
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(app.screen().label(l)))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-fn draw_telemetry(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let sample = &app.telemetry;
-    let used = bytes_to_gib(sample.memory_used_bytes);
-    let total = bytes_to_gib(sample.memory_total_bytes);
-    let network = sample.network_receive_mbps + sample.network_send_mbps;
+fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let l = app.language;
+    let lines = if let Some(model) = &app.model {
+        vec![
+            Line::styled(&model.name, Style::default().fg(BLUE)),
+            Line::raw(""),
+            field(
+                l.text("File size", "Размер файла"),
+                format!("{:.1} GiB", bytes_to_gib(model.file_size_bytes)),
+            ),
+            field(
+                l.text("Estimated RAM", "Оценка памяти"),
+                format!("{:.1} GiB", bytes_to_gib(model.estimated_memory_bytes)),
+            ),
+            Line::raw(""),
+            Line::styled(l.text("File", "Файл"), Style::default().fg(MUTED)),
+            Line::raw(model.path.display().to_string()),
+        ]
+    } else {
+        vec![
+            Line::raw(l.text("No model selected.", "Модель не выбрана.")),
+            Line::raw(""),
+            Line::raw(l.text(
+                "Restart with the path to your GGUF file:",
+                "Перезапустите с путём к файлу GGUF:",
+            )),
+            Line::styled("bution --model \"model.gguf\"", Style::default().fg(BLUE)),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(app.screen().label(l)))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_network(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let l = app.language;
+    let lines = if let Some(route) = &app.best_route {
+        let stability = match route.benchmark.stability {
+            crate::network::Stability::Excellent => l.text("Excellent", "Отличная"),
+            crate::network::Stability::Good => l.text("Good", "Хорошая"),
+            crate::network::Stability::Unstable => l.text("Unstable", "Нестабильная"),
+        };
+        vec![
+            field(
+                l.text("Interface", "Интерфейс"),
+                route.interface.name.clone(),
+            ),
+            field(
+                l.text("Peer address", "Адрес узла"),
+                route.remote_address.to_string(),
+            ),
+            Line::raw(""),
+            field(
+                l.text("Latency", "Задержка"),
+                format!("{:.1} ms", route.benchmark.latency.average_ms),
+            ),
+            field(
+                l.text("Bandwidth", "Скорость сети"),
+                format!("{:.0} Mbps", route.benchmark.bandwidth.megabits_per_second),
+            ),
+            field(l.text("Stability", "Стабильность"), stability),
+        ]
+    } else {
+        vec![
+            Line::raw(l.text("No network measurements yet.", "Сеть ещё не проверена.")),
+            Line::raw(""),
+            Line::raw(l.text(
+                "The network test starts after pairing.",
+                "Проверка сети начнётся после подключения узла.",
+            )),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(app.screen().label(l)))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let l = app.language;
+    let block = panel(app.screen().label(l));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
+    let mut lines = Vec::new();
+    if app.chat_messages.is_empty() {
+        lines.push(Line::raw(if app.cluster_running {
+            l.text("Type a message below.", "Введите сообщение внизу.")
+        } else {
+            l.text(
+                "Start a model on the Cluster page first.",
+                "Сначала запустите модель на странице «Кластер».",
+            )
+        }));
+    }
+    for message in &app.chat_messages {
+        let label = match message.role {
+            crate::chat::ChatRole::System => l.text("System", "Система"),
+            crate::chat::ChatRole::User => l.text("You", "Вы"),
+            crate::chat::ChatRole::Assistant => l.text("Assistant", "Ассистент"),
+        };
+        lines.push(Line::styled(label, Style::default().fg(BLUE)));
+        lines.extend(
+            message
+                .content
+                .lines()
+                .map(|line| Line::raw(line.to_owned())),
+        );
+        lines.push(Line::raw(""));
+    }
+    let history = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let offset = history
+        .line_count(rows[0].width)
+        .saturating_sub(rows[0].height as usize);
+    frame.render_widget(
+        history.scroll((offset.min(u16::MAX as usize) as u16, 0)),
+        rows[0],
+    );
+    let input = if app.chat_streaming {
+        l.text("Generating…", "Генерация…").to_owned()
+    } else {
+        format!("> {}_", app.chat_input)
+    };
+    let input = Paragraph::new(input)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(BLUE));
+    let offset = input
+        .line_count(rows[1].width)
+        .saturating_sub(rows[1].height as usize);
+    frame.render_widget(
+        input.scroll((offset.min(u16::MAX as usize) as u16, 0)),
+        rows[1],
+    );
+}
+
+fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let l = app.language;
     let mut lines = vec![
-        Line::styled(
-            &app.settings.node_name,
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+        field(
+            l.text("Language", "Язык"),
+            l.text("English (system)", "Русский (системный)"),
         ),
-        Line::raw(format!("RAM  {used:.1} / {total:.1} GiB")),
-        Line::raw(format!("CPU  {:.0}%", sample.cpu_percent)),
-        Line::raw(""),
-        Line::styled("Network", Style::default().fg(MUTED)),
-        Line::raw(format!("{network:.1} Mbps")),
-        Line::raw(""),
-        Line::styled("Speed", Style::default().fg(MUTED)),
-        Line::raw(
-            sample
-                .generation_tokens_per_second
-                .map(|speed| format!("{speed:.1} tok/s"))
-                .unwrap_or_else(|| "— tok/s".into()),
-        ),
-        Line::raw(""),
-        Line::styled(
-            "EVENT LOG",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        field(l.text("Version", "Версия"), env!("CARGO_PKG_VERSION")),
+        field(
+            l.text("Control / RPC", "Управление / RPC"),
+            format!("{} / {}", app.settings.control_port, app.settings.rpc_port),
         ),
     ];
+    if let Some(version) = &app.update_available {
+        lines.push(field(l.text("Update", "Обновление"), version.clone()));
+        lines.push(Line::raw("bution --update"));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        l.text("Recent events", "Последние события"),
+        Style::default().fg(MUTED),
+    ));
     lines.extend(
         app.logs
             .iter()
             .rev()
-            .take(6)
+            .take(3)
             .rev()
-            .map(|line| Line::styled(format!("• {line}"), Style::default().fg(MUTED))),
+            .map(|line| Line::raw(line.clone())),
     );
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("CLUSTER"))
-            .wrap(Wrap { trim: true }),
+            .block(panel(app.screen().label(l)))
+            .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-fn draw_help(frame: &mut Frame<'_>, area: Rect) {
+fn draw_metrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let sample = &app.telemetry;
+    let speed = sample
+        .generation_tokens_per_second
+        .map(|speed| format!("{speed:.1} {}", app.language.text("tok/s", "ток/с")))
+        .unwrap_or_else(|| "—".into());
     frame.render_widget(
-        Paragraph::new(
-            "Space: сменить роль • Enter: запуск • Tab / ← →: экраны • Esc: назад • Q: выход",
-        )
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(MUTED))
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(PANEL)),
-        ),
+        Paragraph::new(format!(
+            " RAM {:.1}/{:.1} GiB   CPU {:.0}%   {}",
+            bytes_to_gib(sample.memory_used_bytes),
+            bytes_to_gib(sample.memory_total_bytes),
+            sample.cpu_percent,
+            speed,
+        ))
+        .style(Style::default().fg(MUTED)),
         area,
     );
+}
+
+fn help_lines(app: &App) -> Vec<Line<'static>> {
+    let l = app.language;
+    if app.pending_pairing.is_some() {
+        return vec![Line::raw(l.text(
+            " ←/→ choice   Enter confirm   Esc reject",
+            " ←/→ выбор   Enter подтвердить   Esc отклонить",
+        ))];
+    }
+    let mut actions = Vec::new();
+    match app.screen() {
+        Screen::Cluster => {
+            if app.cluster_running {
+                actions.push(l.text("Enter stop", "Enter остановить"));
+            } else {
+                actions.push(l.text("Space role", "Space роль"));
+                if app.model.is_some() && app.settings.role != NodeRole::Worker {
+                    actions.push(l.text("Enter start", "Enter запустить"));
+                }
+            }
+        }
+        Screen::Chat => {
+            if !app.chat_streaming {
+                if app.cluster_running {
+                    actions.push(l.text("Enter send", "Enter отправить"));
+                }
+                actions.push(l.text("Ctrl+N clear chat", "Ctrl+N очистить чат"));
+            } else {
+                actions.push(l.text("Generating…", "Генерация…"));
+            }
+        }
+        _ => {}
+    }
+    let navigation = if app.screen() == Screen::Chat {
+        l.text(
+            " Tab/Shift+Tab pages   Ctrl+Q quit",
+            " Tab/Shift+Tab страницы   Ctrl+Q выход",
+        )
+    } else {
+        l.text(
+            " Tab/Shift+Tab pages   Q quit",
+            " Tab/Shift+Tab страницы   Q выход",
+        )
+    };
+    vec![
+        Line::raw(format!(" {}", actions.join("   "))),
+        Line::raw(navigation),
+    ]
 }
 
 fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(pairing) = &app.pending_pairing else {
         return;
     };
-    let popup = centered_rect(58, 14, area);
+    let l = app.language;
+    let width = 56.min(area.width.saturating_sub(2));
+    let height = 12.min(area.height.saturating_sub(2));
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
     frame.render_widget(Clear, popup);
-    let accept = if pairing.accept_selected {
-        "▶ [ ✔ ПОДТВЕРДИТЬ / ACCEPT ]"
+    let accept = l.text("Accept", "Принять");
+    let reject = l.text("Reject", "Отклонить");
+    let buttons = if pairing.accept_selected {
+        format!("[ {accept} ]     {reject}")
     } else {
-        "   [ ✔ Подтвердить ]   "
+        format!("{accept}     [ {reject} ]")
     };
-    let reject = if pairing.accept_selected {
-        "   [ ✖ Отклонить ]   "
-    } else {
-        "▶ [ ✖ ОТКЛОНИТЬ / REJECT ]"
-    };
-    let text = vec![
-        Line::styled(
-            "ОБНАРУЖЕН НОВЫЙ КОМПЬЮТЕР В СЕТИ",
-            Style::default()
-                .fg(BLUE_ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
+    let lines = vec![
+        Line::raw(l.text("Connect this computer?", "Подключить этот компьютер?")),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Узел:   ", Style::default().fg(MUTED)),
-            Span::styled(
-                &pairing.name,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" ({})", pairing.address),
-                Style::default().fg(MUTED),
-            ),
-        ]),
+        Line::raw(pairing.name.clone()),
+        Line::styled(pairing.address.to_string(), Style::default().fg(MUTED)),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Код проверки:  ", Style::default().fg(MUTED)),
-            Span::styled(
-                format!(" [ {} ] ", &pairing.code),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::raw(format!("{}: {}", l.text("Code", "Код"), pairing.code)),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled(
-                accept,
-                if pairing.accept_selected {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            ),
-            Span::raw("  "),
-            Span::styled(
-                reject,
-                if pairing.accept_selected {
-                    Style::default().fg(MUTED)
-                } else {
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                },
-            ),
-        ]),
-        Line::raw(""),
-        Line::styled(
-            "← → / Space: переключение • Enter: подтвердить • Esc: отмена",
-            Style::default().fg(MUTED),
-        ),
+        Line::styled(buttons, Style::default().fg(BLUE)),
     ];
     frame.render_widget(
-        Paragraph::new(text)
-            .alignment(Alignment::Center)
-            .block(panel("СОПРЯЖЕНИЕ УЗЛОВ / PAIRING")),
+        Paragraph::new(lines)
+            .block(panel(l.text("Pairing", "Подключение")))
+            .wrap(Wrap { trim: false }),
         popup,
     );
 }
 
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let width = width.min(area.width.saturating_sub(2));
-    let height = height.min(area.height.saturating_sub(2));
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::locale::Language;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn render(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn help(app: &App) -> String {
+        help_lines(app)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn hints_match_page_and_available_actions() {
+        let mut app = super::super::app::tests::test_app();
+        for index in 0..Screen::ALL.len() {
+            app.screen_index = index;
+            assert_eq!(
+                help(&app).contains("Space role"),
+                app.screen() == Screen::Cluster
+            );
+            assert!(!help(&app).contains("Enter start"));
+            assert!(!help(&app).contains("Enter send"));
+        }
+        app.screen_index = 0;
+        app.cluster_running = true;
+        assert!(help(&app).contains("Enter stop"));
+        assert!(!help(&app).contains("Space"));
+        app.screen_index = 4;
+        assert!(help(&app).contains("Enter send"));
+        app.chat_streaming = true;
+        assert!(!help(&app).contains("Enter send"));
+        assert!(!help(&app).contains("Ctrl+N"));
+    }
+
+    #[test]
+    fn pages_and_hints_fit_in_small_terminals_in_both_languages() {
+        let mut app = super::super::app::tests::test_app();
+        for language in [Language::English, Language::Russian] {
+            app.language = language;
+            for (width, height) in [(80, 24), (60, 18), (120, 40)] {
+                for index in 0..Screen::ALL.len() {
+                    app.screen_index = index;
+                    let rendered = render(&app, width, height);
+                    assert!(rendered.contains(app.screen().label(language)));
+                    assert!(rendered.contains(language.text("quit", "выход")));
+                    for hint in help_lines(&app) {
+                        assert!(hint.width() <= width as usize, "{hint}");
+                    }
+                    if language == Language::English {
+                        assert!(
+                            !rendered
+                                .chars()
+                                .any(|ch| ('\u{0400}'..='\u{04ff}').contains(&ch))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_chat_keeps_latest_response_and_input_visible() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen_index = 4;
+        app.cluster_running = true;
+        app.chat_messages.push(crate::chat::ChatMessage {
+            role: crate::chat::ChatRole::Assistant,
+            content: format!("{}\nLATEST_RESPONSE", "long response ".repeat(150)),
+        });
+        app.chat_input = "next question".into();
+        let rendered = render(&app, 80, 24);
+        assert!(rendered.contains("LATEST_RESPONSE"), "{rendered}");
+        assert!(rendered.contains("next question"));
+    }
+
+    #[test]
+    fn pairing_replaces_page_hints() {
+        let mut app = super::super::app::tests::test_app();
+        let (response, _) = tokio::sync::oneshot::channel();
+        app.apply_runtime_event(crate::runtime::RuntimeEvent::PairingRequested {
+            name: "Windows-PC".into(),
+            address: "192.168.1.2:31750".parse().unwrap(),
+            code: "123456".into(),
+            response,
+        });
+        let rendered = render(&app, 80, 24);
+        assert!(rendered.contains("Accept"));
+        assert!(help(&app).contains("Esc reject"));
+        assert!(!help(&app).contains("Space role"));
+    }
+
+    #[test]
+    fn tiny_terminal_shows_resize_instruction() {
+        let app = super::super::app::tests::test_app();
+        assert!(render(&app, 40, 12).contains("60 x 18"));
+    }
+
+    #[test]
+    fn cluster_preview() {
+        let mut app = super::super::app::tests::test_app();
+        for language in [Language::English, Language::Russian] {
+            app.language = language;
+            let rendered = render(&app, 80, 24);
+            assert!(rendered.contains("bution --model"));
+            assert!(rendered.contains(language.text("Space role", "Space роль")));
+            println!("\n{rendered}");
+        }
     }
 }

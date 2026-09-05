@@ -1,6 +1,7 @@
 use crate::chat::{ChatEvent, ChatMessage, ChatRole};
 use crate::cluster::{NodeRole, NodeStatus, NodeSummary};
 use crate::hardware::HardwareProfile;
+use crate::locale::Language;
 use crate::models::ModelInfo;
 use crate::network::{MeasuredRoute, NetworkInterface, interfaces};
 use crate::runtime::{RuntimeCommand, RuntimeEvent};
@@ -45,19 +46,20 @@ impl Screen {
         Self::Settings,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: Language) -> &'static str {
         match self {
-            Self::Cluster => "Cluster",
-            Self::Nodes => "Nodes",
-            Self::Models => "Models",
-            Self::Benchmark => "Benchmark",
-            Self::Chat => "Chat",
-            Self::Settings => "Settings",
+            Self::Cluster => language.text("Cluster", "Кластер"),
+            Self::Nodes => language.text("Nodes", "Узлы"),
+            Self::Models => language.text("Model", "Модель"),
+            Self::Benchmark => language.text("Network", "Сеть"),
+            Self::Chat => language.text("Chat", "Чат"),
+            Self::Settings => language.text("Settings", "Настройки"),
         }
     }
 }
 
 pub struct App {
+    pub language: Language,
     pub running: bool,
     pub screen_index: usize,
     pub settings: Settings,
@@ -110,6 +112,7 @@ impl App {
         logs.push_back("BUTION node initialized".into());
         logs.push_back("Searching for trusted nodes on the LAN…".into());
         Ok(Self {
+            language: Language::detect(),
             running: true,
             screen_index: 0,
             settings,
@@ -137,6 +140,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('q' | 'Q'))
+        {
+            self.running = false;
+            return AppAction::None;
+        }
         if let Some(pairing) = &mut self.pending_pairing {
             match key.code {
                 KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
@@ -170,7 +179,9 @@ impl App {
                     self.running = false;
                     return AppAction::None;
                 }
-                (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N' | 'l' | 'L')) => {
+                (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N' | 'l' | 'L'))
+                    if !self.chat_streaming =>
+                {
                     self.chat_messages.clear();
                     self.chat_input.clear();
                     self.chat_streaming = false;
@@ -222,7 +233,9 @@ impl App {
                     return AppAction::None;
                 }
                 (_, KeyCode::Enter)
-                    if !self.chat_streaming && !self.chat_input.trim().is_empty() =>
+                    if self.cluster_running
+                        && !self.chat_streaming
+                        && !self.chat_input.trim().is_empty() =>
                 {
                     let content = self.chat_input.trim().to_owned();
                     self.chat_input.clear();
@@ -271,6 +284,9 @@ impl App {
                 if self.cluster_running {
                     return AppAction::Runtime(RuntimeCommand::StopModel);
                 }
+                if self.settings.role == NodeRole::Worker {
+                    return AppAction::None;
+                }
                 if let Some(model) = &self.model {
                     let name = model.name.clone();
                     let path = model.path.clone();
@@ -280,7 +296,7 @@ impl App {
                 self.push_log("Select a GGUF model with --model first".into());
             }
             KeyCode::Char(' ' | 'r' | 'R')
-                if self.screen() == Screen::Cluster || self.screen() == Screen::Settings =>
+                if self.screen() == Screen::Cluster && !self.cluster_running =>
             {
                 self.settings.role = match self.settings.role {
                     NodeRole::Automatic => NodeRole::Main,
@@ -405,7 +421,7 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
@@ -418,10 +434,11 @@ mod tests {
         }
     }
 
-    fn test_app() -> App {
+    pub(in crate::tui) fn test_app() -> App {
         let mut collector = TelemetryCollector::default();
         let telemetry = collector.sample();
         App {
+            language: Language::English,
             running: true,
             screen_index: 0,
             settings: Settings::default(),
@@ -512,5 +529,62 @@ mod tests {
         // Second Esc navigates back to previous screen (Benchmark)
         app.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.screen(), Screen::Benchmark);
+    }
+
+    #[test]
+    fn role_changes_only_on_idle_cluster_page() {
+        let mut app = test_app();
+        for index in [1, 2, 3, 5] {
+            app.screen_index = index;
+            app.handle_key(make_key(KeyCode::Char(' '), KeyModifiers::NONE));
+            assert_eq!(app.settings.role, NodeRole::Automatic);
+        }
+        app.screen_index = 0;
+        app.cluster_running = true;
+        app.handle_key(make_key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.settings.role, NodeRole::Automatic);
+
+        let temporary =
+            std::env::temp_dir().join(format!("bution-role-test-{}", uuid::Uuid::new_v4()));
+        app.paths.data_dir = temporary.clone();
+        app.paths.settings_file = temporary.join("settings.toml");
+        app.paths.cache_dir = temporary.join("cache");
+        app.cluster_running = false;
+        app.handle_key(make_key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.settings.role, NodeRole::Main);
+        assert_eq!(
+            Settings::load_or_create(&app.paths).unwrap().role,
+            NodeRole::Main
+        );
+        std::fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn chat_send_requires_started_model() {
+        let mut app = test_app();
+        app.screen_index = 4;
+        app.chat_input = "Hello".into();
+        assert!(matches!(
+            app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::None
+        ));
+        assert!(!app.chat_streaming);
+        app.cluster_running = true;
+        assert!(matches!(
+            app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::SendChat(_)
+        ));
+        assert!(app.chat_streaming);
+    }
+
+    #[test]
+    fn clear_chat_does_not_discard_an_active_stream() {
+        let mut app = test_app();
+        app.screen_index = 4;
+        app.chat_streaming = true;
+        app.chat_input = "draft".into();
+        app.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.chat_input, "draft");
+        assert!(app.chat_streaming);
     }
 }

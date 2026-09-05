@@ -17,7 +17,7 @@ function Show-Banner {
     Write-Host "██████╔╝╚██████╔╝   ██║   ██║╚██████╔╝██║ ╚████║" -ForegroundColor Blue
     Write-Host "╚═════╝  ╚═════╝    ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝" -ForegroundColor Blue
     Write-Host ""
-    Write-Host " ⚡ BUTION" -ForegroundColor Blue -NoNewline
+    Write-Host " ⚡ BUTION (Beta)" -ForegroundColor Blue -NoNewline
     Write-Host " — распределённый запуск LLM в локальной сети" -ForegroundColor White
     Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
     Write-Host ""

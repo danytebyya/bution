@@ -43,6 +43,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                 Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
+                " (Beta)",
+                Style::default()
+                    .fg(Color::Rgb(245, 158, 11))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
                 format!("  v{}", env!("CARGO_PKG_VERSION")),
                 Style::default().fg(MUTED),
             ),
@@ -533,7 +539,10 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
             l.text("Language", "Язык"),
             l.text("English (system)", "Русский (системный)"),
         ),
-        field(l.text("Version", "Версия"), env!("CARGO_PKG_VERSION")),
+        field(
+            l.text("Version", "Версия"),
+            format!("v{} (Beta)", env!("CARGO_PKG_VERSION")),
+        ),
         field(
             l.text("Control / RPC", "Управление / RPC"),
             format!("{} / {}", app.settings.control_port, app.settings.rpc_port),

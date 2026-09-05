@@ -1,6 +1,6 @@
 [package]
 name = "bution"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "Distributed local AI cluster powered by llama.cpp RPC"
 license = "MIT"
@@ -36,6 +36,9 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.12", features = ["v4", "serde"] }
+flate2 = "1.0"
+tar = "0.4"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

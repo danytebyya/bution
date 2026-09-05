@@ -106,7 +106,91 @@ pub fn target_asset_name() -> &'static str {
     }
 }
 
-/// Run an interactive CLI update check and trigger the installer if a new version is available.
+/// Download release asset from URL and extract the bution binary bytes natively.
+pub async fn download_binary_bytes(download_url: &str) -> Result<Vec<u8>> {
+    use std::io::{Cursor, Read};
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .user_agent("bution-updater")
+        .build()?;
+    let response = client.get(download_url).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to download update asset: HTTP {}",
+            response.status()
+        );
+    }
+    let bytes = response.bytes().await?;
+
+    if download_url.ends_with(".zip") {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let name = file.name().to_string();
+            if name.ends_with("bution.exe") || name.ends_with("bution-real.exe") || name == "bution"
+            {
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer)?;
+                return Ok(buffer);
+            }
+        }
+        anyhow::bail!("No bution executable found inside the zip archive");
+    } else if download_url.ends_with(".tar.gz") || download_url.ends_with(".tgz") {
+        let gz = flate2::read::GzDecoder::new(Cursor::new(bytes));
+        let mut archive = tar::Archive::new(gz);
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            if path.ends_with("bution") || path.ends_with("bution.exe") {
+                let mut buffer = Vec::new();
+                entry.read_to_end(&mut buffer)?;
+                return Ok(buffer);
+            }
+        }
+        anyhow::bail!("No bution executable found inside the tar archive");
+    } else {
+        Ok(bytes.to_vec())
+    }
+}
+
+/// Safely and atomically replace the current running executable with the updated binary.
+pub fn apply_binary_update(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
+    let current_exe = std::env::current_exe()?;
+    let parent_dir = current_exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    #[cfg(windows)]
+    {
+        let temp_new = parent_dir.join(format!("bution-upd-{}.tmp", std::process::id()));
+        let old_backup = parent_dir.join(format!("bution-old-{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&temp_new);
+        let _ = std::fs::remove_file(&old_backup);
+
+        std::fs::write(&temp_new, new_bytes)?;
+
+        let _ = std::fs::rename(&current_exe, &old_backup);
+        if let Err(e) = std::fs::rename(&temp_new, &current_exe) {
+            let _ = std::fs::rename(&old_backup, &current_exe);
+            return Err(e.into());
+        }
+        let _ = std::fs::remove_file(&old_backup);
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_new = parent_dir.join(format!(".bution-upd-{}", std::process::id()));
+        let _ = std::fs::remove_file(&temp_new);
+        std::fs::write(&temp_new, new_bytes)?;
+        std::fs::set_permissions(&temp_new, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(&temp_new, &current_exe)?;
+    }
+
+    Ok(current_exe)
+}
+
+/// Run an interactive CLI update check and natively apply the update if a new version is available.
 pub async fn run_cli_update() -> Result<()> {
     println!(
         "[1/2] {}",
@@ -128,43 +212,21 @@ pub async fn run_cli_update() -> Result<()> {
             println!(
                 "[2/2] {}",
                 text(
-                    "Updating BUTION components…",
-                    "Обновление компонентов BUTION…"
+                    "Downloading and applying update…",
+                    "Загрузка и установка обновления…"
                 )
             );
 
-            #[cfg(target_os = "windows")]
-            {
-                let status = std::process::Command::new("powershell")
-                    .args([
-                        "-NoProfile",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-Command",
-                        "$env:BUTION_FORCE_UPDATE='1'; irm https://raw.githubusercontent.com/danytebyya/bution/main/install.ps1 | iex",
-                    ])
-                    .status()?;
-                if !status.success() {
-                    anyhow::bail!(text(
-                        "Windows update script failed.",
-                        "Ошибка скрипта обновления Windows."
-                    ));
-                }
-            }
+            let Some(download_url) = info.download_url else {
+                anyhow::bail!(text(
+                    "No download asset found for this platform.",
+                    "Не найден файл загрузки для этой платформы."
+                ));
+            };
 
-            #[cfg(not(target_os = "windows"))]
-            {
-                let status = std::process::Command::new("bash")
-                    .arg("-c")
-                    .arg("curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash")
-                    .status()?;
-                if !status.success() {
-                    anyhow::bail!(text(
-                        "macOS update script failed.",
-                        "Ошибка скрипта обновления macOS."
-                    ));
-                }
-            }
+            let binary_bytes = download_binary_bytes(&download_url).await?;
+            apply_binary_update(&binary_bytes)?;
+
             println!(
                 "{}: {}",
                 text("BUTION updated", "BUTION обновлён"),
@@ -201,8 +263,10 @@ pub async fn run_cli_update() -> Result<()> {
 /// Returns Ok(true) if updated and re-executed, or Ok(false) if no update needed / offline.
 pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
     let repo = "danytebyya/bution";
-    // 5-second timeout ensures reliable check even over slower network connections
     let Some(info) = check_latest_release(repo, 5).await else {
+        return Ok(false);
+    };
+    let Some(download_url) = info.download_url else {
         return Ok(false);
     };
 
@@ -218,34 +282,21 @@ pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
         text("Updating automatically…", "Автоматическое обновление…")
     );
 
-    let update_success = {
-        #[cfg(target_os = "windows")]
-        {
-            std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    "$env:BUTION_FORCE_UPDATE='1'; irm https://raw.githubusercontent.com/danytebyya/bution/main/install.ps1 | iex",
-                ])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::process::Command::new("bash")
-                .arg("-c")
-                .arg("curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash")
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+    let binary_bytes = match download_binary_bytes(&download_url).await {
+        Ok(b) => b,
+        Err(_) => {
+            println!(
+                "{}",
+                text(
+                    "Update failed. Starting the installed version…",
+                    "Не удалось обновить. Запуск установленной версии…"
+                )
+            );
+            return Ok(false);
         }
     };
 
-    if !update_success {
+    if apply_binary_update(&binary_bytes).is_err() {
         println!(
             "{}",
             text(
@@ -263,7 +314,6 @@ pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
         text("Starting…", "Запуск…")
     );
 
-    // Collect original arguments, ensure --no-update-check is present to avoid loop
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if !args.iter().any(|a| a == "--no-update-check") {
         args.push("--no-update-check".to_string());

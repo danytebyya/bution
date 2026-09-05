@@ -28,6 +28,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 snow = "0.9"
 sysinfo = "0.33"
+sys-locale = "0.3.2"
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["full"] }
 toml = "0.8"

@@ -7,6 +7,7 @@ pub mod control;
 pub mod discovery;
 pub mod hardware;
 pub mod llama;
+pub mod locale;
 pub mod models;
 pub mod network;
 pub mod optimizer;

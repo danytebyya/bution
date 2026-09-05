@@ -1,5 +1,6 @@
 //! Streaming terminal chat client for the local llama-server endpoint.
 
+use crate::locale::text;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -71,7 +72,11 @@ impl ChatClient {
                     let detail = response.text().await.unwrap_or_default();
                     let _ = sender
                         .send(ChatEvent::Error {
-                            message: "The model server could not answer".into(),
+                            message: text(
+                                "The model server could not answer",
+                                "Сервер модели не смог ответить",
+                            )
+                            .into(),
                             detail: format!("HTTP {status}: {detail}"),
                         })
                         .await;
@@ -80,7 +85,11 @@ impl ChatClient {
                 Err(error) => {
                     let _ = sender
                         .send(ChatEvent::Error {
-                            message: "The local model server is unavailable".into(),
+                            message: text(
+                                "The local model server is unavailable",
+                                "Локальный сервер модели недоступен",
+                            )
+                            .into(),
                             detail: error.to_string(),
                         })
                         .await;
@@ -102,7 +111,11 @@ impl ChatClient {
                     Err(error) => {
                         let _ = sender
                             .send(ChatEvent::Error {
-                                message: "The streaming response was interrupted".into(),
+                                message: text(
+                                    "The streaming response was interrupted",
+                                    "Получение ответа прервано",
+                                )
+                                .into(),
                                 detail: error.to_string(),
                             })
                             .await;

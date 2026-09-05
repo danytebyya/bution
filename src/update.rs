@@ -1,5 +1,6 @@
 //! Non-blocking update checker and updater for BUTION.
 
+use crate::locale::text;
 use anyhow::Result;
 use std::time::Duration;
 
@@ -107,16 +108,29 @@ pub fn target_asset_name() -> &'static str {
 
 /// Run an interactive CLI update check and trigger the installer if a new version is available.
 pub async fn run_cli_update() -> Result<()> {
-    println!("\x1b[1;34m[1/2]\x1b[0m \x1b[1;37mПроверка наличия обновлений BUTION…\x1b[0m");
+    println!(
+        "[1/2] {}",
+        text(
+            "Checking for BUTION updates…",
+            "Проверка обновлений BUTION…"
+        )
+    );
     let repo = "danytebyya/bution";
     match check_latest_release(repo, 6).await {
         Some(info) => {
             println!(
-                "       \x1b[1;32m✔\x1b[0m \x1b[37mНайдена новая версия: \x1b[38;2;59;130;246m{}\x1b[0m (текущая: v{})\x1b[0m",
-                info.latest_version, info.current_version
+                "{}: {} ({}: v{})",
+                text("New version", "Новая версия"),
+                info.latest_version,
+                text("installed", "установлена"),
+                info.current_version
             );
             println!(
-                "\n\x1b[1;34m[2/2]\x1b[0m \x1b[1;37mЗапуск обновления компонентов BUTION…\x1b[0m\n"
+                "[2/2] {}",
+                text(
+                    "Updating BUTION components…",
+                    "Обновление компонентов BUTION…"
+                )
             );
 
             #[cfg(target_os = "windows")]
@@ -131,7 +145,10 @@ pub async fn run_cli_update() -> Result<()> {
                     ])
                     .status()?;
                 if !status.success() {
-                    anyhow::bail!("Ошибка при выполнении скрипта обновления Windows.");
+                    anyhow::bail!(text(
+                        "Windows update script failed.",
+                        "Ошибка скрипта обновления Windows."
+                    ));
                 }
             }
 
@@ -142,11 +159,15 @@ pub async fn run_cli_update() -> Result<()> {
                     .arg("curl -fsSL https://raw.githubusercontent.com/danytebyya/bution/main/install.sh | BUTION_FORCE_UPDATE=1 bash")
                     .status()?;
                 if !status.success() {
-                    anyhow::bail!("Ошибка при выполнении скрипта обновления macOS.");
+                    anyhow::bail!(text(
+                        "macOS update script failed.",
+                        "Ошибка скрипта обновления macOS."
+                    ));
                 }
             }
             println!(
-                "\n\x1b[1;32m✔\x1b[0m \x1b[1;37mBUTION успешно обновлён до версии {}!\x1b[0m",
+                "{}: {}",
+                text("BUTION updated", "BUTION обновлён"),
                 info.latest_version
             );
         }
@@ -158,12 +179,17 @@ pub async fn run_cli_update() -> Result<()> {
             let online = client.get("https://api.github.com").send().await.is_ok();
             if online {
                 println!(
-                    "       \x1b[1;32m✔\x1b[0m \x1b[37mУ вас установлена самая актуальная версия BUTION (v{}).\x1b[0m",
+                    "{} (v{}).",
+                    text("No update found", "Обновление не найдено"),
                     env!("CARGO_PKG_VERSION")
                 );
             } else {
                 println!(
-                    "       \x1b[1;33mℹ\x1b[0m \x1b[90mНет подключения к интернету. Проверка обновлений пропущена.\x1b[0m"
+                    "{}",
+                    text(
+                        "Offline. Update check skipped.",
+                        "Нет интернета. Проверка обновлений пропущена."
+                    )
                 );
             }
         }
@@ -181,10 +207,16 @@ pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
     };
 
     println!(
-        "\x1b[38;2;59;130;246m⚡ Найдена новая версия BUTION: \x1b[1;37m{}\x1b[0m (текущая: v{})\x1b[0m",
-        info.latest_version, info.current_version
+        "{}: {} ({}: v{})",
+        text("New BUTION version", "Новая версия BUTION"),
+        info.latest_version,
+        text("installed", "установлена"),
+        info.current_version
     );
-    println!("🔄 Автоматическое обновление до актуальной версии…\n");
+    println!(
+        "{}",
+        text("Updating automatically…", "Автоматическое обновление…")
+    );
 
     let update_success = {
         #[cfg(target_os = "windows")]
@@ -215,14 +247,20 @@ pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
 
     if !update_success {
         println!(
-            "\x1b[1;33m⚠ Не удалось загрузить обновление, продолжаю запуск текущей версии…\x1b[0m\n"
+            "{}",
+            text(
+                "Update failed. Starting the installed version…",
+                "Не удалось обновить. Запуск установленной версии…"
+            )
         );
         return Ok(false);
     }
 
     println!(
-        "\n\x1b[1;32m✔\x1b[0m \x1b[1;37mBUTION успешно обновлён до {}! Запуск…\x1b[0m\n",
-        info.latest_version
+        "{}: {}. {}",
+        text("BUTION updated", "BUTION обновлён"),
+        info.latest_version,
+        text("Starting…", "Запуск…")
     );
 
     // Collect original arguments, ensure --no-update-check is present to avoid loop
@@ -237,7 +275,13 @@ pub async fn auto_update_on_startup_if_needed() -> Result<bool> {
     {
         use std::os::unix::process::CommandExt;
         let err = std::process::Command::new(exe).args(args).exec();
-        eprintln!("Failed to re-execute updated binary: {err}");
+        eprintln!(
+            "{}: {err}",
+            text(
+                "Could not restart BUTION",
+                "Не удалось перезапустить BUTION"
+            )
+        );
         std::process::exit(1);
     }
 

@@ -3,6 +3,11 @@
 use crate::cluster::{NodeRole, NodeStatus};
 use std::sync::OnceLock;
 
+/// Use the same language in background tasks and the terminal UI.
+pub fn text<'a>(english: &'a str, russian: &'a str) -> &'a str {
+    Language::detect().text(english, russian)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Language {
     #[default]

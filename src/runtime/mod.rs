@@ -5,6 +5,7 @@ use crate::control::{ControlClient, ControlEvent, ControlServer};
 use crate::discovery::{DiscoveredNode, DiscoveryAdvertisement, DiscoveryEvent, MdnsDiscovery};
 use crate::hardware::HardwareProfile;
 use crate::llama::{LlamaBinaries, ServerConfig};
+use crate::locale::text;
 use crate::models::{ModelInfo, RunRecommendation};
 use crate::network::{
     MeasuredRoute, NetworkInterface, route_candidates, run_network_benchmark, select_best_route,
@@ -109,8 +110,9 @@ impl RuntimeHandle {
                     .await;
                 let _ = update_sender
                     .send(RuntimeEvent::Log(format!(
-                        "⚡ Доступно обновление: {} (текущая: v{}). Для обновления: bution --update",
-                        info.latest_version, info.current_version
+                        "{}: {} · bution --update",
+                        text("Update available", "Доступно обновление"),
+                        info.latest_version
                     )))
                     .await;
             }
@@ -174,7 +176,11 @@ async fn run_loop(
     if binaries.is_none() {
         let _ = events
             .send(RuntimeEvent::Log(
-                "llama.cpp binaries not found; discovery and pairing remain available".into(),
+                text(
+                    "llama.cpp not found; node discovery is available",
+                    "llama.cpp не найден; доступен поиск узлов",
+                )
+                .into(),
             ))
             .await;
     }
@@ -201,11 +207,11 @@ async fn run_loop(
                     }
                 }
                 Ok(DiscoveryEvent::Removed { fullname }) => {
-                    let _ = events.send(RuntimeEvent::Log(format!("Node left the LAN: {fullname}"))).await;
+                    let _ = events.send(RuntimeEvent::Log(format!("{}: {fullname}", text("Node left the LAN", "Узел покинул сеть")))).await;
                 }
                 Err(error) => {
                     let _ = events.send(RuntimeEvent::Error {
-                        message: "Local network discovery stopped".into(),
+                        message: text("Local network discovery stopped", "Поиск узлов в сети остановлен").into(),
                         detail: format!("{error:#}"),
                     }).await;
                     break;
@@ -221,10 +227,10 @@ async fn run_loop(
                     }).await;
                 }
                 Some(ControlEvent::WorkerStarted { remote_address }) => {
-                    let _ = events.send(RuntimeEvent::Log(format!("RPC worker started for {remote_address}"))).await;
+                    let _ = events.send(RuntimeEvent::Log(format!("{}: {remote_address}", text("RPC worker started", "Дополнительный узел RPC запущен")))).await;
                 }
                 Some(ControlEvent::WorkerStopped { remote_address }) => {
-                    let _ = events.send(RuntimeEvent::Log(format!("RPC worker stopped for {remote_address}"))).await;
+                    let _ = events.send(RuntimeEvent::Log(format!("{}: {remote_address}", text("RPC worker stopped", "Дополнительный узел RPC остановлен")))).await;
                 }
                 Some(ControlEvent::ConnectionError { message, detail }) => {
                     let _ = events.send(RuntimeEvent::Error { message, detail }).await;
@@ -257,21 +263,21 @@ async fn run_loop(
                                     }
                                 }
                                 Err(error) => {
-                                    let _ = events.send(RuntimeEvent::Error { message: format!("Network test with {} could not complete", outcome.node.name), detail: format!("{error:#}") }).await;
+                                    let _ = events.send(RuntimeEvent::Error { message: format!("{}: {}", text("Network test failed", "Не удалось проверить сеть"), outcome.node.name), detail: format!("{error:#}") }).await;
                                 }
                             }
                         }
                     }
                     Err(error) => {
                         let _ = events.send(RuntimeEvent::Error {
-                            message: format!("{} paired but did not report its resources", outcome.node.name),
+                            message: format!("{}: {}", text("Node did not report its resources", "Узел не сообщил доступные ресурсы"), outcome.node.name),
                             detail: format!("{error:#}"),
                         }).await;
                     }
                 },
                 Err(error) => {
                     let _ = events.send(RuntimeEvent::Error {
-                        message: format!("Could not pair with {}", outcome.node.name),
+                        message: format!("{}: {}", text("Could not connect to node", "Не удалось подключить узел"), outcome.node.name),
                         detail: format!("{error:#}"),
                     }).await;
                 }
@@ -289,7 +295,7 @@ async fn run_loop(
                     ).await;
                     match result {
                         Ok(distribution) => { let _ = events.send(RuntimeEvent::ClusterStarted { distribution }).await; }
-                        Err(error) => { let _ = events.send(RuntimeEvent::Error { message: "The model could not be started".into(), detail: format!("{error:#}") }).await; }
+                        Err(error) => { let _ = events.send(RuntimeEvent::Error { message: text("The model could not be started", "Не удалось запустить модель").into(), detail: format!("{error:#}") }).await; }
                     }
                 }
                 RuntimeCommand::StopModel => {

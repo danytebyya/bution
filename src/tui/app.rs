@@ -70,6 +70,7 @@ pub struct App {
     pub model: Option<ModelInfo>,
     pub telemetry: TelemetrySample,
     pub logs: VecDeque<String>,
+    pub last_error: Option<String>,
     pub pending_pairing: Option<PendingPairing>,
     pub cluster_running: bool,
     pub distribution: Vec<(String, f64)>,
@@ -83,6 +84,7 @@ pub struct App {
 
 impl App {
     pub fn load() -> Result<Self> {
+        let language = Language::detect();
         let paths = AppPaths::discover()?;
         let settings = Settings::load_or_create(&paths)?;
         let hardware = HardwareProfile::detect();
@@ -109,10 +111,21 @@ impl App {
         let mut telemetry_collector = TelemetryCollector::default();
         let telemetry = telemetry_collector.sample();
         let mut logs = VecDeque::new();
-        logs.push_back("BUTION node initialized".into());
-        logs.push_back("Searching for trusted nodes on the LAN…".into());
+        logs.push_back(
+            language
+                .text("BUTION is ready", "BUTION готов к работе")
+                .into(),
+        );
+        logs.push_back(
+            language
+                .text(
+                    "Searching for nodes on the LAN…",
+                    "Поиск узлов в локальной сети…",
+                )
+                .into(),
+        );
         Ok(Self {
-            language: Language::detect(),
+            language,
             running: true,
             screen_index: 0,
             settings,
@@ -123,6 +136,7 @@ impl App {
             model,
             telemetry,
             logs,
+            last_error: None,
             pending_pairing: None,
             cluster_running: false,
             distribution: Vec::new(),
@@ -160,7 +174,22 @@ impl App {
                     if let Some(response) = pairing.response.take() {
                         let _ = response.send(decision);
                     }
-                    self.push_log(format!("Pairing request {decision:?}"));
+                    self.push_log(
+                        self.language
+                            .text(
+                                if decision == crate::cluster::PairDecision::Accept {
+                                    "Pairing accepted"
+                                } else {
+                                    "Pairing rejected"
+                                },
+                                if decision == crate::cluster::PairDecision::Accept {
+                                    "Подключение разрешено"
+                                } else {
+                                    "Подключение отклонено"
+                                },
+                            )
+                            .into(),
+                    );
                     self.pending_pairing = None;
                 }
                 KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
@@ -288,12 +317,23 @@ impl App {
                     return AppAction::None;
                 }
                 if let Some(model) = &self.model {
+                    self.last_error = None;
                     let name = model.name.clone();
                     let path = model.path.clone();
-                    self.push_log(format!("Starting {name}…"));
+                    self.push_log(format!(
+                        "{}: {name}",
+                        self.language.text("Starting model", "Запуск модели")
+                    ));
                     return AppAction::Runtime(RuntimeCommand::StartModel(path));
                 }
-                self.push_log("Select a GGUF model with --model first".into());
+                self.push_log(
+                    self.language
+                        .text(
+                            "Select a GGUF model with --model first",
+                            "Сначала выберите модель через --model",
+                        )
+                        .into(),
+                );
             }
             KeyCode::Char(' ' | 'r' | 'R')
                 if self.screen() == Screen::Cluster && !self.cluster_running =>
@@ -307,9 +347,17 @@ impl App {
                     local.role = self.settings.role;
                 }
                 if let Err(error) = self.settings.save(&self.paths) {
-                    self.push_log(format!("Settings could not be saved: {error}"));
+                    self.push_log(format!(
+                        "{}: {error}",
+                        self.language
+                            .text("Could not save settings", "Не удалось сохранить настройки")
+                    ));
                 } else {
-                    self.push_log(format!("Node role changed to {:?}", self.settings.role));
+                    self.push_log(format!(
+                        "{}: {}",
+                        self.language.text("Role", "Роль"),
+                        self.language.role(self.settings.role)
+                    ));
                 }
             }
             _ => {}
@@ -343,18 +391,27 @@ impl App {
                         available_memory_bytes: 0,
                         compute_backend: node.backend,
                     });
-                    self.push_log(format!("Discovered {}", node.name));
+                    self.push_log(format!(
+                        "{}: {}",
+                        self.language.text("Node discovered", "Обнаружен узел"),
+                        node.name
+                    ));
                 }
             }
             RuntimeEvent::NodePaired(node) => {
                 self.nodes.retain(|existing| existing.id != node.id);
-                self.push_log(format!("Paired with {}", node.name));
+                self.push_log(format!(
+                    "{}: {}",
+                    self.language.text("Connected", "Подключён"),
+                    node.name
+                ));
                 self.nodes.push(node);
             }
             RuntimeEvent::NetworkMeasured { node_id: _, route } => {
                 self.push_log(format!(
-                    "Selected {}: {:.0} Mbps, {:.1} ms",
-                    route.interface.kind,
+                    "{} {}: {:.0} Mbps, {:.1} ms",
+                    self.language.text("Selected", "Выбран"),
+                    route.interface.name,
                     route.benchmark.bandwidth.megabits_per_second,
                     route.benchmark.latency.average_ms
                 ));
@@ -375,20 +432,33 @@ impl App {
                 });
             }
             RuntimeEvent::ClusterStarted { distribution } => {
+                self.last_error = None;
                 self.cluster_running = true;
                 self.distribution = distribution;
-                self.push_log("llama-server started".into());
+                self.push_log(
+                    self.language
+                        .text("Model process started", "Процесс модели запущен")
+                        .into(),
+                );
             }
             RuntimeEvent::ClusterStopped => {
+                self.last_error = None;
                 self.cluster_running = false;
                 self.distribution.clear();
-                self.push_log("Cluster stopped cleanly".into());
+                self.push_log(
+                    self.language
+                        .text("Model stopped", "Модель остановлена")
+                        .into(),
+                );
             }
             RuntimeEvent::UpdateAvailable { latest_version, .. } => {
                 self.update_available = Some(latest_version);
             }
             RuntimeEvent::Log(message) => self.push_log(message),
-            RuntimeEvent::Error { message, .. } => self.push_log(message),
+            RuntimeEvent::Error { message, .. } => {
+                self.last_error = Some(message.clone());
+                self.push_log(message);
+            }
         }
     }
 
@@ -411,7 +481,7 @@ impl App {
                 self.chat_streaming = false;
                 if let Some(last) = self.chat_messages.last_mut() {
                     if last.role == ChatRole::Assistant && last.content.is_empty() {
-                        last.content = format!("{message}. Press Enter to try again.");
+                        last.content = message.clone();
                     }
                 }
                 self.push_log(message);
@@ -449,6 +519,7 @@ pub(super) mod tests {
             model: None,
             telemetry,
             logs: VecDeque::new(),
+            last_error: None,
             pending_pairing: None,
             cluster_running: false,
             distribution: Vec::new(),
@@ -586,5 +657,17 @@ pub(super) mod tests {
         app.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL));
         assert_eq!(app.chat_input, "draft");
         assert!(app.chat_streaming);
+    }
+
+    #[test]
+    fn model_lifecycle_messages_follow_ui_language() {
+        for language in [Language::English, Language::Russian] {
+            let mut app = test_app();
+            app.language = language;
+            app.apply_runtime_event(RuntimeEvent::ClusterStarted { distribution: Vec::new() });
+            assert_eq!(app.logs.back().unwrap(), language.text("Model process started", "Процесс модели запущен"));
+            app.apply_runtime_event(RuntimeEvent::ClusterStopped);
+            assert_eq!(app.logs.back().unwrap(), language.text("Model stopped", "Модель остановлена"));
+        }
     }
 }

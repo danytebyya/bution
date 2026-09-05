@@ -6,6 +6,7 @@ use crate::cluster::{
 };
 use crate::hardware::HardwareProfile;
 use crate::llama::{LlamaBinaries, WorkerConfig};
+use crate::locale::text;
 use crate::network::{BenchmarkServer, NetworkInterface, interfaces};
 use crate::processes::{ProcessKind, ProcessManager};
 use crate::security::{NoiseChannel, NoiseIdentity, pairing_code, validate_distinct_identity};
@@ -96,7 +97,7 @@ impl ControlServer {
                             tokio::spawn(async move {
                                 if let Err(error) = handle_connection(stream, remote, context.clone()).await {
                                     let _ = context.events.send(ControlEvent::ConnectionError {
-                                        message: "Secure connection with a node was interrupted".into(),
+                                        message: text("Secure connection with a node was interrupted", "Защищённое соединение с узлом прервано").into(),
                                         detail: format!("{error:#}"),
                                     }).await;
                                 }
@@ -104,7 +105,7 @@ impl ControlServer {
                         }
                         Err(error) => {
                             let _ = events_sender.send(ControlEvent::ConnectionError {
-                                message: "Could not accept a node connection".into(),
+                                message: text("Could not accept a node connection", "Не удалось принять подключение узла").into(),
                                 detail: error.to_string(),
                             }).await;
                         }

@@ -98,7 +98,9 @@ fn field(label: &str, value: impl Into<String>) -> Line<'static> {
 
 fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let l = app.language;
-    let status = if app.cluster_running {
+    let status = if let Some(error) = &app.last_error {
+        error.as_str()
+    } else if app.cluster_running {
         l.text("Model process started", "Процесс модели запущен")
     } else if app.settings.role == NodeRole::Worker {
         l.text(
@@ -116,7 +118,7 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = vec![
         Line::styled(
             status,
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            Style::default().fg(if app.last_error.is_some() { Color::LightRed } else { BLUE }).add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
         field(l.text("Role", "Роль"), l.role(app.settings.role)),
@@ -160,10 +162,6 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
     } else if app.model.is_none() && app.settings.role != NodeRole::Worker {
         lines.push(Line::raw(""));
-        lines.push(Line::raw(l.text(
-            "Restart with the path to your GGUF file:",
-            "Перезапустите с путём к файлу GGUF:",
-        )));
         lines.push(Line::styled(
             "bution --model \"model.gguf\"",
             Style::default().fg(BLUE),
@@ -571,6 +569,9 @@ mod tests {
                     let rendered = render(&app, width, height);
                     assert!(rendered.contains(app.screen().label(language)));
                     assert!(rendered.contains(language.text("quit", "выход")));
+                    if app.screen() == Screen::Cluster {
+                        assert!(rendered.contains("bution --model"), "{rendered}");
+                    }
                     for hint in help_lines(&app) {
                         assert!(hint.width() <= width as usize, "{hint}");
                     }
@@ -621,6 +622,16 @@ mod tests {
     fn tiny_terminal_shows_resize_instruction() {
         let app = super::super::app::tests::test_app();
         assert!(render(&app, 40, 12).contains("60 x 18"));
+    }
+
+    #[test]
+    fn failed_model_start_is_visible_without_opening_logs() {
+        let mut app = super::super::app::tests::test_app();
+        app.apply_runtime_event(crate::runtime::RuntimeEvent::Error {
+            message: "The model could not be started".into(),
+            detail: "test".into(),
+        });
+        assert!(render(&app, 80, 24).contains("The model could not be started"));
     }
 
     #[test]

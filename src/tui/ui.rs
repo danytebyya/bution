@@ -1,6 +1,6 @@
 use super::app::ModelsPane;
 use super::{App, Screen};
-use crate::cluster::NodeRole;
+use crate::cluster::{NodeRole, NodeStatus};
 use crate::hardware::bytes_to_gib;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Tabs, Wrap};
 
 const BLUE: Color = Color::Rgb(59, 130, 246);
+const GREEN: Color = Color::Rgb(34, 197, 94);
+const YELLOW: Color = Color::Rgb(234, 179, 8);
 const MUTED: Color = Color::Rgb(145, 153, 170);
 const BORDER: Color = Color::Rgb(60, 69, 86);
 
@@ -191,34 +193,91 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_nodes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let l = app.language;
     let mut lines = Vec::new();
-    for node in &app.nodes {
+    for (i, node) in app.nodes.iter().enumerate() {
         let local = node.id == app.settings.node_id;
-        lines.push(Line::styled(
-            format!(
-                "{}{}",
-                node.name,
-                if local {
-                    l.text(" (this computer)", " (этот компьютер)")
-                } else {
-                    ""
-                }
+        let selected = i == app.node_index;
+        let marker = if selected { "> " } else { "  " };
+
+        let status_span = match node.status {
+            NodeStatus::Ready => Span::styled(
+                format!(" [{}]", l.text("Ready", "Готов")),
+                Style::default().fg(GREEN),
             ),
-            Style::default().fg(BLUE),
-        ));
+            NodeStatus::Pairing => Span::styled(
+                format!(" [{}]", l.text("Pairing…", "Подключение…")),
+                Style::default().fg(YELLOW),
+            ),
+            NodeStatus::Discovered => {
+                if local {
+                    Span::styled(
+                        format!(" [{}]", l.text("Ready", "Готов")),
+                        Style::default().fg(GREEN),
+                    )
+                } else {
+                    Span::styled(
+                        format!(
+                            " [{}]",
+                            l.text(
+                                "Not paired — Enter to pair",
+                                "Не сопряжён — Enter для подключения",
+                            )
+                        ),
+                        Style::default().fg(YELLOW),
+                    )
+                }
+            }
+            NodeStatus::Trusted => Span::styled(
+                format!(" [{}]", l.text("Trusted", "Доверенный")),
+                Style::default().fg(GREEN),
+            ),
+            NodeStatus::Busy => Span::styled(
+                format!(" [{}]", l.text("Busy", "Занят")),
+                Style::default().fg(YELLOW),
+            ),
+            NodeStatus::Offline => Span::styled(
+                format!(" [{}]", l.text("Offline", "Не в сети")),
+                Style::default().fg(MUTED),
+            ),
+        };
+
+        let title_style = if selected {
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(BLUE)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(marker, title_style),
+            Span::styled(&node.name, title_style),
+            if local {
+                Span::styled(
+                    l.text(" (this computer)", " (этот компьютер)"),
+                    Style::default().fg(MUTED),
+                )
+            } else {
+                Span::raw("")
+            },
+            status_span,
+        ]));
+
         lines.push(Line::raw(format!(
-            "{} · {} · {:.1} GiB",
+            "    {} · {:.1} GiB · {}",
             l.role(node.role),
-            l.node_status(node.status),
             bytes_to_gib(node.available_memory_bytes),
+            node.compute_backend,
         )));
+
         let display_addresses = crate::network::filter_display_addresses(&node.addresses);
         if !display_addresses.is_empty() {
             lines.push(Line::styled(
-                display_addresses
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                format!(
+                    "    IP: {}",
+                    display_addresses
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 Style::default().fg(MUTED),
             ));
         }
@@ -656,6 +715,19 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
                 }
             }
         }
+        Screen::Nodes => {
+            if let Some(node) = app.nodes.get(app.node_index) {
+                if node.id != app.settings.node_id {
+                    if node.status == NodeStatus::Ready || node.status == NodeStatus::Trusted {
+                        actions.push(l.text("Enter reconnect", "Enter переподключить"));
+                    } else if node.status == NodeStatus::Pairing {
+                        actions.push(l.text("Pairing…", "Подключение…"));
+                    } else {
+                        actions.push(l.text("Enter pair", "Enter сопрячь"));
+                    }
+                }
+            }
+        }
         Screen::Chat => {
             if !app.chat_streaming {
                 if app.cluster_running {
@@ -750,6 +822,7 @@ fn draw_pairing(frame: &mut Frame<'_>, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cluster::NodeSummary;
     use crate::locale::Language;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -908,5 +981,47 @@ mod tests {
             assert!(rendered.contains(language.text("Space role", "Space роль")));
             println!("\n{rendered}");
         }
+    }
+
+    #[test]
+    fn nodes_screen_rendering_shows_selection_and_status() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen_index = 1; // Nodes
+        app.nodes = vec![
+            NodeSummary {
+                id: app.settings.node_id,
+                name: "local-pc".into(),
+                role: NodeRole::Main,
+                status: NodeStatus::Ready,
+                addresses: vec!["192.168.1.10".parse().unwrap()],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 16_000_000_000,
+                compute_backend: "metal".into(),
+            },
+            NodeSummary {
+                id: uuid::Uuid::new_v4(),
+                name: "remote-worker".into(),
+                role: NodeRole::Worker,
+                status: NodeStatus::Discovered,
+                addresses: vec!["192.168.1.20".parse().unwrap()],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 32_000_000_000,
+                compute_backend: "cuda".into(),
+            },
+        ];
+
+        // First node selected
+        app.node_index = 0;
+        let rendered = render(&app, 80, 24);
+        assert!(rendered.contains("> local-pc"));
+        assert!(rendered.contains("remote-worker"));
+
+        // Second node selected
+        app.node_index = 1;
+        let rendered = render(&app, 80, 24);
+        assert!(rendered.contains("> remote-worker"));
+        assert!(help(&app).contains("Enter pair"));
     }
 }

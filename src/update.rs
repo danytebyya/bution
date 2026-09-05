@@ -177,9 +177,7 @@ pub async fn download_binary_bytes(download_url: &str) -> Result<Vec<u8>> {
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
-            if name.ends_with("bution.exe")
-                || name.ends_with("bution-real.exe")
-                || name == "bution"
+            if name.ends_with("bution.exe") || name.ends_with("bution-real.exe") || name == "bution"
             {
                 let mut buffer = Vec::new();
                 file.read_to_end(&mut buffer)?;

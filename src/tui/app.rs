@@ -93,6 +93,7 @@ pub struct App {
     pub language: Language,
     pub running: bool,
     pub screen_index: usize,
+    pub node_index: usize,
     pub settings: Settings,
     pub paths: AppPaths,
     pub hardware: HardwareProfile,
@@ -163,6 +164,7 @@ impl App {
             language,
             running: true,
             screen_index: 0,
+            node_index: 0,
             settings,
             paths,
             hardware,
@@ -207,7 +209,10 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
         if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('q' | 'Q'))
+            && matches!(
+                key.code,
+                KeyCode::Char('q' | 'Q' | 'c' | 'C' | 'й' | 'Й' | 'с' | 'С')
+            )
         {
             self.running = false;
             return AppAction::None;
@@ -244,7 +249,7 @@ impl App {
                     );
                     self.pending_pairing = None;
                 }
-                KeyCode::Esc | KeyCode::Char('q' | 'Q') => {
+                KeyCode::Esc | KeyCode::Char('q' | 'Q' | 'й' | 'Й') => {
                     if let Some(response) = pairing.response.take() {
                         let _ = response.send(crate::cluster::PairDecision::Reject);
                     }
@@ -256,13 +261,17 @@ impl App {
         }
         if self.screen() == Screen::Chat {
             match (key.modifiers, key.code) {
-                (KeyModifiers::CONTROL, KeyCode::Char('q' | 'Q' | 'c' | 'C')) => {
+                (
+                    KeyModifiers::CONTROL,
+                    KeyCode::Char('q' | 'Q' | 'c' | 'C' | 'й' | 'Й' | 'с' | 'С'),
+                ) => {
                     self.running = false;
                     return AppAction::None;
                 }
-                (KeyModifiers::CONTROL, KeyCode::Char('n' | 'N' | 'l' | 'L'))
-                    if !self.chat_streaming =>
-                {
+                (
+                    KeyModifiers::CONTROL,
+                    KeyCode::Char('n' | 'N' | 'l' | 'L' | 'т' | 'Т' | 'д' | 'Д'),
+                ) if !self.chat_streaming => {
                     self.chat_messages.clear();
                     self.chat_input.clear();
                     self.chat_streaming = false;
@@ -342,11 +351,14 @@ impl App {
                 _ => return AppAction::None,
             }
         }
+        if self.screen() == Screen::Nodes {
+            return self.handle_nodes_key(key);
+        }
         if self.screen() == Screen::Models {
             return self.handle_models_key(key);
         }
         match key.code {
-            KeyCode::Char('q' | 'Q') => self.running = false,
+            KeyCode::Char('q' | 'Q' | 'й' | 'Й') => self.running = false,
             KeyCode::Tab => {
                 self.screen_index = (self.screen_index + 1) % Screen::ALL.len();
             }
@@ -390,7 +402,7 @@ impl App {
                         .into(),
                 );
             }
-            KeyCode::Char(' ' | 'r' | 'R')
+            KeyCode::Char(' ' | 'r' | 'R' | 'к' | 'К')
                 if self.screen() == Screen::Cluster && !self.cluster_running =>
             {
                 self.settings.role = match self.settings.role {
@@ -420,9 +432,79 @@ impl App {
         AppAction::None
     }
 
+    fn handle_nodes_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Char('q' | 'Q' | 'й' | 'Й') => {
+                self.running = false;
+            }
+            KeyCode::Left => {
+                self.screen_index = self.screen_index.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                self.screen_index = (self.screen_index + 1).min(Screen::ALL.len() - 1);
+            }
+            KeyCode::Tab => {
+                self.screen_index = (self.screen_index + 1) % Screen::ALL.len();
+            }
+            KeyCode::BackTab => {
+                self.screen_index = if self.screen_index == 0 {
+                    Screen::ALL.len() - 1
+                } else {
+                    self.screen_index - 1
+                };
+            }
+            KeyCode::Up => {
+                self.node_index = self.node_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if !self.nodes.is_empty() {
+                    self.node_index = (self.node_index + 1).min(self.nodes.len() - 1);
+                }
+            }
+            KeyCode::Esc => {
+                self.screen_index = 0;
+            }
+            KeyCode::Enter | KeyCode::Char(' ' | 'p' | 'P' | 'п' | 'П') => {
+                if let Some(node) = self.nodes.get_mut(self.node_index) {
+                    if node.id == self.settings.node_id {
+                        self.push_log(
+                            self.language
+                                .text(
+                                    "This is the local computer",
+                                    "Это этот компьютер (локальный узел)",
+                                )
+                                .into(),
+                        );
+                    } else if node.status == NodeStatus::Pairing {
+                        self.push_log(
+                            self.language
+                                .text(
+                                    "Pairing is already in progress…",
+                                    "Подключение к этому узлу уже выполняется…",
+                                )
+                                .into(),
+                        );
+                    } else {
+                        let id = node.id;
+                        let name = node.name.clone();
+                        node.status = NodeStatus::Pairing;
+                        self.push_log(format!(
+                            "{}: {name}",
+                            self.language
+                                .text("Pairing with node", "Запрос сопряжения с узлом")
+                        ));
+                        return AppAction::Runtime(RuntimeCommand::PairNode(id));
+                    }
+                }
+            }
+            _ => {}
+        }
+        AppAction::None
+    }
+
     fn handle_models_key(&mut self, key: KeyEvent) -> AppAction {
         match key.code {
-            KeyCode::Char('q' | 'Q') if self.models.pane != ModelsPane::Search => {
+            KeyCode::Char('q' | 'Q' | 'й' | 'Й') if self.models.pane != ModelsPane::Search => {
                 self.running = false;
             }
             KeyCode::Left
@@ -447,7 +529,7 @@ impl App {
                     self.screen_index - 1
                 };
             }
-            KeyCode::Char('i' | 'I') if self.models.pane != ModelsPane::Search => {
+            KeyCode::Char('i' | 'I' | 'ш' | 'Ш') if self.models.pane != ModelsPane::Search => {
                 self.models.pane = ModelsPane::Installed;
                 self.models.delete_confirmation = None;
             }
@@ -455,7 +537,7 @@ impl App {
                 self.models.pane = ModelsPane::Search;
                 self.models.delete_confirmation = None;
             }
-            KeyCode::Char('c' | 'C') if self.models.download.is_some() => {
+            KeyCode::Char('c' | 'C' | 'с' | 'С') if self.models.download.is_some() => {
                 self.models.status = Some(
                     self.language
                         .text("Cancelling download…", "Отмена загрузки…")
@@ -571,7 +653,7 @@ impl App {
                     }
                 }
             },
-            KeyCode::Char('d' | 'D') if self.models.pane == ModelsPane::Installed => {
+            KeyCode::Char('d' | 'D' | 'в' | 'В') if self.models.pane == ModelsPane::Installed => {
                 if let Some(model) = self.models.installed.get(self.models.installed_index) {
                     let path = model.path.clone();
                     if self.models.delete_confirmation.as_ref() != Some(&path) {
@@ -899,6 +981,11 @@ impl App {
             RuntimeEvent::Log(message) => self.push_log(message),
             RuntimeEvent::Error { message, .. } => {
                 self.models.delete_after_stop = None;
+                for node in &mut self.nodes {
+                    if node.status == NodeStatus::Pairing {
+                        node.status = NodeStatus::Discovered;
+                    }
+                }
                 self.last_error = Some(message.clone());
                 self.push_log(message);
             }
@@ -954,6 +1041,7 @@ pub(super) mod tests {
             language: Language::English,
             running: true,
             screen_index: 0,
+            node_index: 0,
             settings: Settings::default(),
             paths: AppPaths::discover().unwrap(),
             hardware: HardwareProfile::detect(),
@@ -1270,5 +1358,127 @@ pub(super) mod tests {
         app.handle_key(make_key(KeyCode::Backspace, KeyModifiers::NONE));
         app.handle_key(make_key(KeyCode::Char('2'), KeyModifiers::NONE));
         assert_eq!(app.models.search_input, "nonexisten2");
+    }
+
+    #[test]
+    fn nodes_up_and_down_moves_node_index() {
+        let mut app = test_app();
+        app.screen_index = 1; // Nodes screen
+        app.nodes = vec![
+            NodeSummary {
+                id: app.settings.node_id,
+                name: "local-pc".into(),
+                role: NodeRole::Main,
+                status: NodeStatus::Ready,
+                addresses: vec![],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 16_000_000_000,
+                compute_backend: "metal".into(),
+            },
+            NodeSummary {
+                id: uuid::Uuid::new_v4(),
+                name: "remote-worker".into(),
+                role: NodeRole::Worker,
+                status: NodeStatus::Discovered,
+                addresses: vec![],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 32_000_000_000,
+                compute_backend: "cuda".into(),
+            },
+        ];
+
+        assert_eq!(app.node_index, 0);
+
+        // Move down to remote node
+        app.handle_key(make_key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.node_index, 1);
+
+        // Clamps at bottom
+        app.handle_key(make_key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.node_index, 1);
+
+        // Move up back to local node
+        app.handle_key(make_key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.node_index, 0);
+
+        // Clamps at top
+        app.handle_key(make_key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.node_index, 0);
+    }
+
+    #[test]
+    fn nodes_enter_triggers_pairing_for_remote_node() {
+        let mut app = test_app();
+        app.screen_index = 1;
+        let remote_id = uuid::Uuid::new_v4();
+        app.nodes = vec![
+            NodeSummary {
+                id: app.settings.node_id,
+                name: "local-pc".into(),
+                role: NodeRole::Main,
+                status: NodeStatus::Ready,
+                addresses: vec![],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 16_000_000_000,
+                compute_backend: "metal".into(),
+            },
+            NodeSummary {
+                id: remote_id,
+                name: "remote-node".into(),
+                role: NodeRole::Worker,
+                status: NodeStatus::Discovered,
+                addresses: vec![],
+                control_port: 50051,
+                rpc_port: 50052,
+                available_memory_bytes: 32_000_000_000,
+                compute_backend: "cuda".into(),
+            },
+        ];
+
+        // Pressing enter on local node does not pair
+        app.node_index = 0;
+        assert!(matches!(
+            app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::None
+        ));
+
+        // Move to remote node and press Enter
+        app.node_index = 1;
+        match app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)) {
+            AppAction::Runtime(RuntimeCommand::PairNode(id)) => assert_eq!(id, remote_id),
+            _ => panic!("expected RuntimeCommand::PairNode"),
+        }
+        assert_eq!(app.nodes[1].status, NodeStatus::Pairing);
+    }
+
+    #[test]
+    fn cyrillic_and_ctrl_shortcuts_work_for_quitting() {
+        let mut app = test_app();
+        assert!(app.running);
+
+        // Global Ctrl+C quits
+        app.handle_key(make_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.running);
+
+        // Cyrillic 'й' quits on Nodes screen
+        let mut app = test_app();
+        app.screen_index = 1;
+        app.handle_key(make_key(KeyCode::Char('й'), KeyModifiers::NONE));
+        assert!(!app.running);
+
+        // Cyrillic 'Й' quits on Cluster screen
+        let mut app = test_app();
+        app.screen_index = 0;
+        app.handle_key(make_key(KeyCode::Char('Й'), KeyModifiers::NONE));
+        assert!(!app.running);
+
+        // Global Ctrl+Q with Russian layout quits
+        let mut app = test_app();
+        app.screen_index = 4; // Chat screen
+        app.handle_key(make_key(KeyCode::Char('й'), KeyModifiers::CONTROL));
+        assert!(!app.running);
     }
 }

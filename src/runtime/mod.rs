@@ -54,6 +54,7 @@ pub enum RuntimeEvent {
 pub enum RuntimeCommand {
     StartModel(PathBuf),
     StopModel,
+    PairNode(uuid::Uuid),
     Shutdown,
 }
 
@@ -156,6 +157,69 @@ struct PairOutcome {
     result: Result<ControlClient>,
 }
 
+async fn pair_node(
+    node: DiscoveredNode,
+    identity: NoiseIdentity,
+    settings: Arc<Mutex<Settings>>,
+    local_interfaces: Vec<NetworkInterface>,
+    pair_sender: mpsc::Sender<PairOutcome>,
+) {
+    let mut candidate_addrs = Vec::new();
+    let routes = route_candidates(&local_interfaces, &node.addresses);
+    for (_local, remote_addr) in routes {
+        let sock = SocketAddr::new(remote_addr, node.control_port);
+        if !candidate_addrs.contains(&sock) {
+            candidate_addrs.push(sock);
+        }
+    }
+    for addr in &node.addresses {
+        if addr.is_ipv4() {
+            let sock = SocketAddr::new(*addr, node.control_port);
+            if !candidate_addrs.contains(&sock) {
+                candidate_addrs.push(sock);
+            }
+        }
+    }
+    for addr in &node.addresses {
+        if addr.is_ipv6() {
+            let sock = SocketAddr::new(*addr, node.control_port);
+            if !candidate_addrs.contains(&sock) {
+                candidate_addrs.push(sock);
+            }
+        }
+    }
+    if candidate_addrs.is_empty() {
+        if let Some(addr) = node.addresses.first() {
+            candidate_addrs.push(SocketAddr::new(*addr, node.control_port));
+        }
+    }
+
+    let mut last_err = anyhow::anyhow!("no reachable address for node");
+    let local_settings = settings.lock().await.clone();
+    for target_addr in candidate_addrs {
+        match ControlClient::pair(target_addr, &identity, &local_settings).await {
+            Ok(client) => {
+                let _ = pair_sender
+                    .send(PairOutcome {
+                        node,
+                        result: Ok(client),
+                    })
+                    .await;
+                return;
+            }
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+    let _ = pair_sender
+        .send(PairOutcome {
+            node,
+            result: Err(last_err),
+        })
+        .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_loop(
     settings: Arc<Mutex<Settings>>,
@@ -172,6 +236,7 @@ async fn run_loop(
     let (pair_sender, mut pair_receiver) = mpsc::channel::<PairOutcome>(16);
     let mut clients = HashMap::new();
     let mut pairing_in_progress = HashSet::new();
+    let mut discovered_nodes: HashMap<uuid::Uuid, DiscoveredNode> = HashMap::new();
     let mut best_routes: HashMap<uuid::Uuid, MeasuredRoute> = HashMap::new();
     let mut main_processes = ProcessManager::default();
     if binaries.is_none() {
@@ -190,21 +255,20 @@ async fn run_loop(
         tokio::select! {
             event = discovery.next() => match event {
                 Ok(DiscoveryEvent::Found(node)) => {
+                    discovered_nodes.insert(node.id, node.clone());
                     let _ = events.send(RuntimeEvent::NodeDiscovered(node.clone())).await;
                     let local_id = settings.lock().await.node_id;
                     if local_id < node.id
                         && !clients.contains_key(&node.id)
                         && pairing_in_progress.insert(node.id)
                     {
-                        if let Some(address) = preferred_control_address(&node) {
-                            let sender = pair_sender.clone();
-                            let identity = identity.clone();
-                            let local_settings = settings.lock().await.clone();
-                            tokio::spawn(async move {
-                                let result = ControlClient::pair(address, &identity, &local_settings).await;
-                                let _ = sender.send(PairOutcome { node, result }).await;
-                            });
-                        }
+                        let sender = pair_sender.clone();
+                        let identity = identity.clone();
+                        let local_settings = settings.clone();
+                        let local_interfaces = local_interfaces.clone();
+                        tokio::spawn(async move {
+                            pair_node(node, identity, local_settings, local_interfaces, sender).await;
+                        });
                     }
                 }
                 Ok(DiscoveryEvent::Removed { fullname }) => {
@@ -284,6 +348,33 @@ async fn run_loop(
                 }
             }},
             Some(command) = commands.recv() => match command {
+                RuntimeCommand::PairNode(node_id) => {
+                    if let Some(node) = discovered_nodes.get(&node_id).cloned() {
+                        if pairing_in_progress.insert(node.id) {
+                            let _ = events.send(RuntimeEvent::Log(format!(
+                                "{}: {}",
+                                text("Connecting to node…", "Подключение к узлу…"),
+                                node.name
+                            ))).await;
+                            let sender = pair_sender.clone();
+                            let identity = identity.clone();
+                            let local_settings = settings.clone();
+                            let local_interfaces = local_interfaces.clone();
+                            tokio::spawn(async move {
+                                pair_node(node, identity, local_settings, local_interfaces, sender).await;
+                            });
+                        } else {
+                            let _ = events.send(RuntimeEvent::Log(
+                                text("Pairing is already in progress…", "Подключение уже выполняется…").into()
+                            )).await;
+                        }
+                    } else {
+                        let _ = events.send(RuntimeEvent::Error {
+                            message: text("Node not found on the network", "Узел не найден в сети").into(),
+                            detail: text("Discovery has not received mDNS advertisement for this node yet", "mDNS ещё не получил объявление для этого узла").into(),
+                        }).await;
+                    }
+                }
                 RuntimeCommand::StartModel(model) => {
                     let result = start_model(
                         model,
@@ -393,15 +484,6 @@ async fn start_model(
     };
     processes.start(binaries.server_process(&config)?).await?;
     Ok(distribution)
-}
-
-fn preferred_control_address(node: &DiscoveredNode) -> Option<SocketAddr> {
-    node.addresses
-        .iter()
-        .copied()
-        .find(|address| address.is_ipv4())
-        .or_else(|| node.addresses.first().copied())
-        .map(|address| SocketAddr::new(address, node.control_port))
 }
 
 async fn benchmark_routes(

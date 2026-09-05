@@ -420,19 +420,19 @@ impl App {
 
     fn handle_models_key(&mut self, key: KeyEvent) -> AppAction {
         match key.code {
-            KeyCode::Char('q')
-                if self.models.pane == ModelsPane::Search
-                    && self.models.search_input.is_empty() =>
-            {
-                self.running = false;
-            }
             KeyCode::Char('q' | 'Q') if self.models.pane != ModelsPane::Search => {
                 self.running = false;
             }
-            KeyCode::Left => {
+            KeyCode::Left
+                if self.models.pane != ModelsPane::Search
+                    || self.models.search_input.is_empty() =>
+            {
                 self.screen_index = self.screen_index.saturating_sub(1);
             }
-            KeyCode::Right => {
+            KeyCode::Right
+                if self.models.pane != ModelsPane::Search
+                    || self.models.search_input.is_empty() =>
+            {
                 self.screen_index = (self.screen_index + 1).min(Screen::ALL.len() - 1);
             }
             KeyCode::Tab => {
@@ -449,7 +449,7 @@ impl App {
                 self.models.pane = ModelsPane::Installed;
                 self.models.delete_confirmation = None;
             }
-            KeyCode::Char('/') => {
+            KeyCode::Char('/') if self.models.pane != ModelsPane::Search => {
                 self.models.pane = ModelsPane::Search;
                 self.models.delete_confirmation = None;
             }
@@ -1088,18 +1088,27 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn q_quits_from_an_empty_models_search() {
+    fn q_types_into_search_input_even_when_empty() {
         let mut app = test_app();
         app.screen_index = 2;
+        app.models.pane = ModelsPane::Search;
         app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
-        assert!(!app.running);
+        assert!(app.running);
+        assert_eq!(app.models.search_input, "q");
 
         let mut app = test_app();
         app.screen_index = 2;
+        app.models.pane = ModelsPane::Search;
         app.models.search_input = "model".into();
         app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.running);
         assert_eq!(app.models.search_input, "modelq");
+
+        let mut app = test_app();
+        app.screen_index = 2;
+        app.models.pane = ModelsPane::Installed;
+        app.handle_key(make_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!app.running);
     }
 
     #[test]

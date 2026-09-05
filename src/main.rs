@@ -64,9 +64,7 @@ async fn main() -> Result<()> {
 
     if let Some(model_path) = cli.model {
         let model = ModelInfo::inspect(&model_path)?;
-        app.settings.last_model = Some(model_path);
         app.model = Some(model);
-        settings_changed = true;
     }
     if let Some(directory) = cli.llama_bin_dir {
         app.settings.llama_bin_dir = Some(directory);

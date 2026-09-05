@@ -1,3 +1,4 @@
+use super::app::ModelsPane;
 use super::{App, Screen};
 use crate::cluster::NodeRole;
 use crate::hardware::bytes_to_gib;
@@ -230,39 +231,196 @@ fn draw_nodes(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_model(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let l = app.language;
-    let lines = if let Some(model) = &app.model {
-        vec![
-            Line::styled(&model.name, Style::default().fg(BLUE)),
-            Line::raw(""),
-            field(
-                l.text("File size", "Размер файла"),
-                format!("{:.1} GiB", bytes_to_gib(model.file_size_bytes)),
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                match app.models.pane {
+                    ModelsPane::Search => l.text("[Search]", "[Поиск]"),
+                    _ => l.text("Search", "Поиск"),
+                },
+                Style::default().fg(BLUE),
             ),
-            field(
-                l.text("Estimated RAM", "Оценка памяти"),
-                format!("{:.1} GiB", bytes_to_gib(model.estimated_memory_bytes)),
+            Span::raw("   "),
+            Span::styled(
+                match app.models.pane {
+                    ModelsPane::Installed => l.text("[Installed]", "[Установленные]"),
+                    _ => l.text("Installed", "Установленные"),
+                },
+                Style::default().fg(BLUE),
             ),
-            Line::raw(""),
-            Line::styled(l.text("File", "Файл"), Style::default().fg(MUTED)),
-            Line::raw(model.path.display().to_string()),
-        ]
+        ]),
+        Line::raw(""),
+    ];
+    match app.models.pane {
+        ModelsPane::Search => {
+            lines.push(Line::styled(
+                format!("> {}_", app.models.search_input),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(if app.models.searching {
+                l.text("Searching Hugging Face…", "Поиск на Hugging Face…")
+            } else {
+                l.text(
+                    "Type a model name and press Enter.",
+                    "Введите название модели и нажмите Enter.",
+                )
+            }));
+            lines.push(Line::styled(
+                l.text(
+                    "Only repositories containing GGUF files are shown.",
+                    "Показываются только репозитории с GGUF.",
+                ),
+                Style::default().fg(MUTED),
+            ));
+        }
+        ModelsPane::Repositories => {
+            lines.push(Line::styled(
+                format!(
+                    "{}: {}",
+                    l.text("Results", "Результаты"),
+                    app.models.active_query
+                ),
+                Style::default().fg(MUTED),
+            ));
+            lines.push(Line::raw(""));
+            if app.models.repositories.is_empty() {
+                lines.push(Line::raw(l.text(
+                    "No GGUF repositories found.",
+                    "Репозитории GGUF не найдены.",
+                )));
+            }
+            for (index, repository) in app.models.repositories.iter().enumerate() {
+                lines.push(selectable_line(
+                    index == app.models.repository_index,
+                    format!(
+                        "{}  ↓{}  ♥{}",
+                        repository.id, repository.downloads, repository.likes
+                    ),
+                ));
+            }
+        }
+        ModelsPane::Files => {
+            lines.push(Line::styled(
+                app.models.open_repository.as_deref().unwrap_or("GGUF"),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::raw(""));
+            for (index, ranked) in app.models.files.iter().enumerate() {
+                lines.push(selectable_line(
+                    index == app.models.file_index,
+                    format!(
+                        "{:<11} {:>7.1} GiB   {}",
+                        ranked.file.quantization.label(),
+                        bytes_to_gib(ranked.file.size_bytes),
+                        ranked.rating.label()
+                    ),
+                ));
+            }
+        }
+        ModelsPane::Installed => {
+            lines.push(Line::styled(
+                l.text("Installed", "Установленные"),
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::raw(""));
+            if app.models.installed.is_empty() {
+                lines.push(Line::raw(
+                    l.text("No downloaded models yet.", "Скачанных моделей пока нет."),
+                ));
+            }
+            for (index, model) in app.models.installed.iter().enumerate() {
+                let quant = crate::hub::quantization::Quantization::parse(
+                    model
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default(),
+                )
+                .map(|quant| quant.0)
+                .unwrap_or_else(|| "GGUF".into());
+                let active = app
+                    .model
+                    .as_ref()
+                    .is_some_and(|current| current.path == model.path);
+                lines.push(selectable_line(
+                    index == app.models.installed_index,
+                    format!(
+                        "{}{}",
+                        model.name,
+                        if active {
+                            l.text("  [active]", "  [активна]")
+                        } else {
+                            ""
+                        }
+                    ),
+                ));
+                lines.push(Line::raw(format!(
+                    "  {:.1} GiB   {}   {}",
+                    bytes_to_gib(model.file_size_bytes),
+                    quant,
+                    app.installed_rating(model).label()
+                )));
+                lines.push(Line::raw(""));
+            }
+        }
+    }
+    if let Some(download) = &app.models.download {
+        let percent = if download.total_bytes == 0 {
+            0.0
+        } else {
+            download.downloaded_bytes as f64 * 100.0 / download.total_bytes as f64
+        };
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!(
+                "{}: {:.1}%  {:.1}/{:.1} GiB  {:.1} MiB/s",
+                download.filename,
+                percent,
+                bytes_to_gib(download.downloaded_bytes),
+                bytes_to_gib(download.total_bytes),
+                download.bytes_per_second / (1024.0 * 1024.0),
+            ),
+            Style::default().fg(BLUE),
+        ));
+    }
+    if let Some(status) = &app.models.status {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            status.clone(),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    let selected_line = match app.models.pane {
+        ModelsPane::Repositories => 4 + app.models.repository_index,
+        ModelsPane::Files => 4 + app.models.file_index,
+        ModelsPane::Installed => 4 + app.models.installed_index * 3,
+        ModelsPane::Search => 0,
+    };
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let scroll = if app.models.download.is_some() || app.models.status.is_some() {
+        lines.len().saturating_sub(visible_height)
     } else {
-        vec![
-            Line::raw(l.text("No model selected.", "Модель не выбрана.")),
-            Line::raw(""),
-            Line::raw(l.text(
-                "Restart with the path to your GGUF file:",
-                "Перезапустите с путём к файлу GGUF:",
-            )),
-            Line::styled("bution --model \"model.gguf\"", Style::default().fg(BLUE)),
-        ]
+        selected_line.saturating_sub(visible_height.saturating_sub(1))
     };
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel(app.screen().label(l)))
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn selectable_line(selected: bool, text: String) -> Line<'static> {
+    Line::styled(
+        format!("{} {text}", if selected { ">" } else { " " }),
+        if selected {
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        },
+    )
 }
 
 fn draw_network(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -455,9 +613,30 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
                 actions.push(l.text("Generating…", "Генерация…"));
             }
         }
+        Screen::Models => {
+            if app.models.download.is_some() {
+                actions.push(l.text("C cancel download", "C отменить загрузку"));
+            } else {
+                match app.models.pane {
+                    ModelsPane::Search => actions.push(l.text("Enter search", "Enter искать")),
+                    ModelsPane::Repositories => actions.push(l.text(
+                        "Enter open   / search   I installed",
+                        "Enter открыть   / поиск   I установленные",
+                    )),
+                    ModelsPane::Files => actions.push(l.text(
+                        "Enter download   I installed",
+                        "Enter скачать   I установленные",
+                    )),
+                    ModelsPane::Installed => actions.push(l.text(
+                        "Enter use   D delete   / search",
+                        "Enter выбрать   D удалить   / поиск",
+                    )),
+                }
+            }
+        }
         _ => {}
     }
-    let navigation = if app.screen() == Screen::Chat {
+    let navigation = if app.screen() == Screen::Chat || app.screen() == Screen::Models {
         l.text(
             " Tab/Shift+Tab pages   Ctrl+Q quit",
             " Tab/Shift+Tab страницы   Ctrl+Q выход",

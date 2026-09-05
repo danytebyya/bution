@@ -1,8 +1,12 @@
 use crate::chat::{ChatEvent, ChatMessage, ChatRole};
 use crate::cluster::{NodeRole, NodeStatus, NodeSummary};
 use crate::hardware::HardwareProfile;
+use crate::hub::download::DownloadProgress;
+use crate::hub::huggingface::HubRepository;
+use crate::hub::recommendations::{FitRating, MemoryNode, RankedFile, rate_installed};
+use crate::hub::{HubCommand, HubEvent};
 use crate::locale::Language;
-use crate::models::ModelInfo;
+use crate::models::{ModelInfo, scan_directory};
 use crate::network::{MeasuredRoute, NetworkInterface, interfaces};
 use crate::runtime::{RuntimeCommand, RuntimeEvent};
 use crate::storage::{AppPaths, Settings};
@@ -23,7 +27,34 @@ pub struct PendingPairing {
 pub enum AppAction {
     None,
     Runtime(RuntimeCommand),
+    Hub(HubCommand),
     SendChat(Vec<ChatMessage>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelsPane {
+    Search,
+    Repositories,
+    Files,
+    Installed,
+}
+
+pub struct ModelsState {
+    pub pane: ModelsPane,
+    pub search_input: String,
+    pub active_query: String,
+    pub searching: bool,
+    pub repositories: Vec<HubRepository>,
+    pub repository_index: usize,
+    pub open_repository: Option<String>,
+    pub files: Vec<RankedFile>,
+    pub file_index: usize,
+    pub installed: Vec<ModelInfo>,
+    pub installed_index: usize,
+    pub download: Option<DownloadProgress>,
+    pub status: Option<String>,
+    pub delete_confirmation: Option<std::path::PathBuf>,
+    pub delete_after_stop: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +81,7 @@ impl Screen {
         match self {
             Self::Cluster => language.text("Cluster", "Кластер"),
             Self::Nodes => language.text("Nodes", "Узлы"),
-            Self::Models => language.text("Model", "Модель"),
+            Self::Models => language.text("Models", "Модели"),
             Self::Benchmark => language.text("Network", "Сеть"),
             Self::Chat => language.text("Chat", "Чат"),
             Self::Settings => language.text("Settings", "Настройки"),
@@ -68,6 +99,7 @@ pub struct App {
     pub interfaces: Vec<NetworkInterface>,
     pub nodes: Vec<NodeSummary>,
     pub model: Option<ModelInfo>,
+    pub models: ModelsState,
     pub telemetry: TelemetrySample,
     pub logs: VecDeque<String>,
     pub last_error: Option<String>,
@@ -93,6 +125,7 @@ impl App {
             .last_model
             .as_ref()
             .and_then(|path| ModelInfo::inspect(path).ok());
+        let installed = scan_directory(&paths.models_dir).unwrap_or_default();
         let nodes = vec![NodeSummary {
             id: settings.node_id,
             name: settings.node_name.clone(),
@@ -134,6 +167,23 @@ impl App {
             interfaces,
             nodes,
             model,
+            models: ModelsState {
+                pane: ModelsPane::Search,
+                search_input: String::new(),
+                active_query: String::new(),
+                searching: false,
+                repositories: Vec::new(),
+                repository_index: 0,
+                open_repository: None,
+                files: Vec::new(),
+                file_index: 0,
+                installed,
+                installed_index: 0,
+                download: None,
+                status: None,
+                delete_confirmation: None,
+                delete_after_stop: None,
+            },
             telemetry,
             logs,
             last_error: None,
@@ -290,6 +340,9 @@ impl App {
                 _ => return AppAction::None,
             }
         }
+        if self.screen() == Screen::Models {
+            return self.handle_models_key(key);
+        }
         match key.code {
             KeyCode::Char('q' | 'Q') => self.running = false,
             KeyCode::Tab => {
@@ -363,6 +416,343 @@ impl App {
             _ => {}
         }
         AppAction::None
+    }
+
+    fn handle_models_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Char('q' | 'Q') if self.models.pane != ModelsPane::Search => {
+                self.running = false;
+            }
+            KeyCode::Left => {
+                self.screen_index = self.screen_index.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                self.screen_index = (self.screen_index + 1).min(Screen::ALL.len() - 1);
+            }
+            KeyCode::Tab => {
+                self.screen_index = (self.screen_index + 1) % Screen::ALL.len();
+            }
+            KeyCode::BackTab => {
+                self.screen_index = if self.screen_index == 0 {
+                    Screen::ALL.len() - 1
+                } else {
+                    self.screen_index - 1
+                };
+            }
+            KeyCode::Char('i' | 'I') if self.models.pane != ModelsPane::Search => {
+                self.models.pane = ModelsPane::Installed;
+                self.models.delete_confirmation = None;
+            }
+            KeyCode::Char('/') => {
+                self.models.pane = ModelsPane::Search;
+                self.models.delete_confirmation = None;
+            }
+            KeyCode::Char('c' | 'C') if self.models.download.is_some() => {
+                self.models.status = Some(
+                    self.language
+                        .text("Cancelling download…", "Отмена загрузки…")
+                        .into(),
+                );
+                return AppAction::Hub(HubCommand::CancelDownload);
+            }
+            KeyCode::Esc if self.models.download.is_some() => {
+                self.models.status = Some(
+                    self.language
+                        .text("Cancelling download…", "Отмена загрузки…")
+                        .into(),
+                );
+                return AppAction::Hub(HubCommand::CancelDownload);
+            }
+            KeyCode::Esc => {
+                self.models.delete_confirmation = None;
+                self.models.pane = match self.models.pane {
+                    ModelsPane::Files | ModelsPane::Installed => ModelsPane::Repositories,
+                    ModelsPane::Repositories => ModelsPane::Search,
+                    ModelsPane::Search => {
+                        self.screen_index = 0;
+                        ModelsPane::Search
+                    }
+                };
+            }
+            KeyCode::Up => self.move_model_selection(-1),
+            KeyCode::Down => self.move_model_selection(1),
+            KeyCode::Enter => match self.models.pane {
+                ModelsPane::Search => {
+                    let query = self.models.search_input.trim().to_owned();
+                    if !query.is_empty() {
+                        self.models.searching = true;
+                        self.models.status = None;
+                        return AppAction::Hub(HubCommand::Search(query));
+                    }
+                }
+                ModelsPane::Repositories => {
+                    if let Some(repository) =
+                        self.models.repositories.get(self.models.repository_index)
+                    {
+                        let id = repository.id.clone();
+                        self.models.open_repository = Some(id.clone());
+                        self.models.status = Some(
+                            self.language
+                                .text("Loading GGUF files…", "Загрузка списка GGUF…")
+                                .into(),
+                        );
+                        return AppAction::Hub(HubCommand::OpenRepository(
+                            id,
+                            self.recommendation_nodes(),
+                        ));
+                    }
+                }
+                ModelsPane::Files => {
+                    if self.models.download.is_none() {
+                        if let Some(file) = self.models.files.get(self.models.file_index) {
+                            let basename = std::path::Path::new(&file.file.filename)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or(&file.file.filename)
+                                .to_owned();
+                            self.models.download = Some(DownloadProgress {
+                                destination: self.paths.models_dir.join(&basename),
+                                filename: basename,
+                                downloaded_bytes: 0,
+                                total_bytes: file.file.size_bytes,
+                                bytes_per_second: 0.0,
+                            });
+                            self.models.status = Some(
+                                self.language
+                                    .text("Starting download…", "Начало загрузки…")
+                                    .into(),
+                            );
+                            return AppAction::Hub(HubCommand::Download(file.file.clone()));
+                        }
+                    }
+                }
+                ModelsPane::Installed => {
+                    if let Some(model) = self
+                        .models
+                        .installed
+                        .get(self.models.installed_index)
+                        .cloned()
+                    {
+                        if self.cluster_running {
+                            self.models.status = Some(
+                                self.language
+                                    .text(
+                                        "Stop inference before changing the active model",
+                                        "Остановите inference перед сменой активной модели",
+                                    )
+                                    .into(),
+                            );
+                        } else {
+                            self.model = Some(model.clone());
+                            self.settings.last_model = Some(model.path.clone());
+                            match self.settings.save(&self.paths) {
+                                Ok(()) => {
+                                    self.models.status = Some(
+                                        self.language
+                                            .text("Model selected", "Модель выбрана")
+                                            .into(),
+                                    )
+                                }
+                                Err(error) => self.models.status = Some(format!("{error:#}")),
+                            }
+                        }
+                    }
+                }
+            },
+            KeyCode::Char('d' | 'D') if self.models.pane == ModelsPane::Installed => {
+                if let Some(model) = self.models.installed.get(self.models.installed_index) {
+                    let path = model.path.clone();
+                    if self.models.delete_confirmation.as_ref() != Some(&path) {
+                        self.models.delete_confirmation = Some(path);
+                        self.models.status = Some(
+                            self.language
+                                .text(
+                                    "Press D again to confirm deletion",
+                                    "Нажмите D ещё раз для подтверждения удаления",
+                                )
+                                .into(),
+                        );
+                    } else if self.cluster_running
+                        && self
+                            .model
+                            .as_ref()
+                            .is_some_and(|active| active.path == path)
+                    {
+                        self.models.delete_after_stop = Some(path);
+                        self.models.status = Some(
+                            self.language
+                                .text(
+                                    "Stopping inference before deletion…",
+                                    "Остановка inference перед удалением…",
+                                )
+                                .into(),
+                        );
+                        return AppAction::Runtime(RuntimeCommand::StopModel);
+                    } else {
+                        self.models.delete_confirmation = None;
+                        return AppAction::Hub(HubCommand::Delete(path));
+                    }
+                }
+            }
+            KeyCode::Backspace if self.models.pane == ModelsPane::Search => {
+                self.models.search_input.pop();
+            }
+            KeyCode::Char(character)
+                if self.models.pane == ModelsPane::Search
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.models.search_input.push(character);
+            }
+            _ => {}
+        }
+        AppAction::None
+    }
+
+    fn move_model_selection(&mut self, delta: isize) {
+        let (index, length) = match self.models.pane {
+            ModelsPane::Repositories => (
+                &mut self.models.repository_index,
+                self.models.repositories.len(),
+            ),
+            ModelsPane::Files => (&mut self.models.file_index, self.models.files.len()),
+            ModelsPane::Installed => (
+                &mut self.models.installed_index,
+                self.models.installed.len(),
+            ),
+            ModelsPane::Search => return,
+        };
+        if length > 0 {
+            *index = (*index as isize + delta).clamp(0, length.saturating_sub(1) as isize) as usize;
+        }
+        self.models.delete_confirmation = None;
+    }
+
+    fn recommendation_nodes(&self) -> Vec<MemoryNode> {
+        let mut nodes = vec![MemoryNode {
+            name: "Local".into(),
+            safe_memory_bytes: self.hardware.ai_memory_bytes,
+            compute_score: self.hardware.logical_cores as f64,
+            network_score: 100.0,
+            local: true,
+        }];
+        // Runtime currently distributes to one paired worker. Matching that limit
+        // keeps the Hub recommendation identical to what StartModel can execute.
+        if let Some(worker) = self
+            .nodes
+            .iter()
+            .find(|node| node.id != self.settings.node_id && node.is_usable_worker())
+        {
+            nodes.push(MemoryNode {
+                name: worker.name.clone(),
+                safe_memory_bytes: worker.available_memory_bytes,
+                compute_score: 1.0,
+                network_score: 50.0,
+                local: false,
+            });
+        }
+        nodes
+    }
+
+    pub fn installed_rating(&self, model: &ModelInfo) -> FitRating {
+        rate_installed(model.file_size_bytes, &self.recommendation_nodes())
+    }
+
+    pub fn apply_hub_event(&mut self, event: HubEvent) {
+        match event {
+            HubEvent::SearchStarted(query) => {
+                self.models.active_query = query;
+                self.models.searching = true;
+            }
+            HubEvent::SearchFinished {
+                query,
+                repositories,
+            } => {
+                if query == self.models.active_query {
+                    self.models.repositories = repositories;
+                    self.models.repository_index = 0;
+                    self.models.searching = false;
+                    self.models.pane = ModelsPane::Repositories;
+                    self.models.status = None;
+                }
+            }
+            HubEvent::RepositoryLoaded { repository, files } => {
+                if self.models.open_repository.as_deref() == Some(&repository) {
+                    self.models.files = files;
+                    self.models.file_index = self
+                        .models
+                        .files
+                        .iter()
+                        .position(|file| file.rating == FitRating::Recommended)
+                        .unwrap_or(0);
+                    self.models.pane = ModelsPane::Files;
+                    self.models.status = None;
+                }
+            }
+            HubEvent::DownloadProgress(progress) => {
+                self.models.download = Some(progress);
+                self.models.status = None;
+            }
+            HubEvent::DownloadFinished(model) => {
+                self.models.download = None;
+                self.models
+                    .installed
+                    .retain(|existing| existing.path != model.path);
+                self.models.installed.push(model);
+                self.models
+                    .installed
+                    .sort_by(|left, right| left.name.cmp(&right.name));
+                self.models.installed_index = self.models.installed.len().saturating_sub(1);
+                self.models.pane = ModelsPane::Installed;
+                self.models.status = Some(
+                    self.language
+                        .text(
+                            "Download complete; press Enter to use",
+                            "Загрузка завершена; Enter — использовать",
+                        )
+                        .into(),
+                );
+            }
+            HubEvent::DownloadCancelled(_) => {
+                self.models.download = None;
+                self.models.status = Some(
+                    self.language
+                        .text(
+                            "Download cancelled; partial file kept for resume",
+                            "Загрузка отменена; частичный файл сохранён для продолжения",
+                        )
+                        .into(),
+                );
+            }
+            HubEvent::ModelDeleted(path) => {
+                self.models.installed.retain(|model| model.path != path);
+                self.models.installed_index = self
+                    .models
+                    .installed_index
+                    .min(self.models.installed.len().saturating_sub(1));
+                if self.model.as_ref().is_some_and(|model| model.path == path) {
+                    self.model = None;
+                    self.settings.last_model = None;
+                    let _ = self.settings.save(&self.paths);
+                }
+                self.models.status =
+                    Some(self.language.text("Model deleted", "Модель удалена").into());
+            }
+            HubEvent::Error(message) => {
+                self.models.searching = false;
+                self.models.download = None;
+                self.models.status = Some(message);
+            }
+        }
+    }
+
+    pub fn take_hub_command(&mut self) -> Option<HubCommand> {
+        if self.cluster_running {
+            None
+        } else {
+            self.models.delete_after_stop.take().map(HubCommand::Delete)
+        }
     }
 
     pub fn refresh_telemetry(&mut self) {
@@ -456,6 +846,7 @@ impl App {
             }
             RuntimeEvent::Log(message) => self.push_log(message),
             RuntimeEvent::Error { message, .. } => {
+                self.models.delete_after_stop = None;
                 self.last_error = Some(message.clone());
                 self.push_log(message);
             }
@@ -517,6 +908,23 @@ pub(super) mod tests {
             interfaces: Vec::new(),
             nodes: Vec::new(),
             model: None,
+            models: ModelsState {
+                pane: ModelsPane::Search,
+                search_input: String::new(),
+                active_query: String::new(),
+                searching: false,
+                repositories: Vec::new(),
+                repository_index: 0,
+                open_repository: None,
+                files: Vec::new(),
+                file_index: 0,
+                installed: Vec::new(),
+                installed_index: 0,
+                download: None,
+                status: None,
+                delete_confirmation: None,
+                delete_after_stop: None,
+            },
             telemetry,
             logs: VecDeque::new(),
             last_error: None,
@@ -657,6 +1065,80 @@ pub(super) mod tests {
         app.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL));
         assert_eq!(app.chat_input, "draft");
         assert!(app.chat_streaming);
+    }
+
+    #[test]
+    fn models_search_is_emitted_as_a_background_hub_command() {
+        let mut app = test_app();
+        app.screen_index = 2;
+        for character in "Qwen uncensored".chars() {
+            app.handle_key(make_key(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        match app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE)) {
+            AppAction::Hub(HubCommand::Search(query)) => assert_eq!(query, "Qwen uncensored"),
+            _ => panic!("expected an asynchronous Hub search"),
+        }
+        assert!(app.models.searching);
+    }
+
+    #[test]
+    fn selecting_an_installed_model_persists_it() {
+        use std::io::Write;
+        let directory =
+            std::env::temp_dir().join(format!("bution-model-select-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Qwen-Q4_K_M.gguf");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"GGUF\x03\x00\x00\x00").unwrap();
+        let model = ModelInfo::inspect(&path).unwrap();
+        let mut app = test_app();
+        app.paths.data_dir = directory.clone();
+        app.paths.models_dir = directory.clone();
+        app.paths.settings_file = directory.join("settings.toml");
+        app.paths.cache_dir = directory.join("cache");
+        app.screen_index = 2;
+        app.models.pane = ModelsPane::Installed;
+        app.models.installed.push(model.clone());
+        app.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.model.as_ref().unwrap().path, path);
+        assert_eq!(
+            Settings::load_or_create(&app.paths).unwrap().last_model,
+            Some(path)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn active_model_deletion_requires_confirmation_and_stop() {
+        use std::io::Write;
+        let directory =
+            std::env::temp_dir().join(format!("bution-model-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Qwen-Q4_K_M.gguf");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"GGUF\x03\x00\x00\x00").unwrap();
+        let model = ModelInfo::inspect(&path).unwrap();
+        let mut app = test_app();
+        app.screen_index = 2;
+        app.models.pane = ModelsPane::Installed;
+        app.models.installed.push(model.clone());
+        app.model = Some(model);
+        app.cluster_running = true;
+        assert!(matches!(
+            app.handle_key(make_key(KeyCode::Char('D'), KeyModifiers::NONE)),
+            AppAction::None
+        ));
+        assert!(app.models.delete_after_stop.is_none());
+        assert!(matches!(
+            app.handle_key(make_key(KeyCode::Char('D'), KeyModifiers::NONE)),
+            AppAction::Runtime(RuntimeCommand::StopModel)
+        ));
+        assert!(app.take_hub_command().is_none());
+        app.apply_runtime_event(RuntimeEvent::ClusterStopped);
+        assert!(
+            matches!(app.take_hub_command(), Some(HubCommand::Delete(target)) if target == path)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -40,10 +40,17 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut last_telemetry = Instant::now();
     let chat_client = crate::chat::ChatClient::local("127.0.0.1:8080".parse()?);
     let mut chat_events: Option<tokio::sync::mpsc::Receiver<crate::chat::ChatEvent>> = None;
+    let mut hub = crate::hub::HubHandle::start(app.paths.models_dir.clone())?;
 
     while app.running {
         while let Ok(event) = runtime.events.try_recv() {
             app.apply_runtime_event(event);
+        }
+        while let Some(command) = app.take_hub_command() {
+            hub.command(command).await?;
+        }
+        while let Ok(event) = hub.events.try_recv() {
+            app.apply_hub_event(event);
         }
         if let Some(receiver) = &mut chat_events {
             while let Ok(event) = receiver.try_recv() {
@@ -60,6 +67,7 @@ pub async fn run(mut app: App) -> Result<()> {
                 if key.kind == KeyEventKind::Press {
                     match app.handle_key(key) {
                         app::AppAction::Runtime(command) => runtime.command(command).await?,
+                        app::AppAction::Hub(command) => hub.command(command).await?,
                         app::AppAction::SendChat(messages) => {
                             chat_events = Some(chat_client.stream_completion(messages, 0.7));
                         }

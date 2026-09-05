@@ -118,7 +118,13 @@ fn draw_cluster(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = vec![
         Line::styled(
             status,
-            Style::default().fg(if app.last_error.is_some() { Color::LightRed } else { BLUE }).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(if app.last_error.is_some() {
+                    Color::LightRed
+                } else {
+                    BLUE
+                })
+                .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
         field(l.text("Role", "Роль"), l.role(app.settings.role)),

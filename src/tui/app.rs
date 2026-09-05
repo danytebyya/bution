@@ -664,10 +664,18 @@ pub(super) mod tests {
         for language in [Language::English, Language::Russian] {
             let mut app = test_app();
             app.language = language;
-            app.apply_runtime_event(RuntimeEvent::ClusterStarted { distribution: Vec::new() });
-            assert_eq!(app.logs.back().unwrap(), language.text("Model process started", "Процесс модели запущен"));
+            app.apply_runtime_event(RuntimeEvent::ClusterStarted {
+                distribution: Vec::new(),
+            });
+            assert_eq!(
+                app.logs.back().unwrap(),
+                language.text("Model process started", "Процесс модели запущен")
+            );
             app.apply_runtime_event(RuntimeEvent::ClusterStopped);
-            assert_eq!(app.logs.back().unwrap(), language.text("Model stopped", "Модель остановлена"));
+            assert_eq!(
+                app.logs.back().unwrap(),
+                language.text("Model stopped", "Модель остановлена")
+            );
         }
     }
 }
